@@ -20,6 +20,7 @@ import { getGame, isMultiplayerGame } from './utils/games'
 import { leaveRoom, selectGame } from './multiplayer/roomLifecycle'
 import { getSocket } from './utils/socket'
 import soundManager from './utils/sounds'
+import { getApiUrl } from './utils/apiUrl'
 
 // Helper function to get roomId from URL (single source of truth)
 function getRoomIdFromUrl() {
@@ -76,8 +77,7 @@ function App() {
         if (savedRoomState && savedRoomId) {
           try {
             // Verify room still exists and user is still in it
-            const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:'
-            const apiUrl = `${protocol}//${window.location.hostname}:8000`
+            const apiUrl = getApiUrl()
             const roomResponse = await fetch(`${apiUrl}/api/rooms/${savedRoomId}`)
             if (roomResponse.ok) {
               const roomData = await roomResponse.json()
@@ -144,8 +144,7 @@ function App() {
         if (roomId && (!savedRoomState || savedRoomState.roomId !== roomId)) {
           try {
             // Check if this profile is already in the room
-            const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:'
-            const apiUrl = `${protocol}//${window.location.hostname}:8000`
+            const apiUrl = getApiUrl()
             const roomResponse = await fetch(`${apiUrl}/api/rooms/${roomId}`)
             if (roomResponse.ok) {
               const roomData = await roomResponse.json()
@@ -239,8 +238,7 @@ function App() {
       // Check if user is already in this room
       const checkRoomStatus = async () => {
         try {
-          const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:'
-          const apiUrl = `${protocol}//${window.location.hostname}:8000`
+          const apiUrl = getApiUrl()
           const roomResponse = await fetch(`${apiUrl}/api/rooms/${roomId}`)
           if (roomResponse.ok) {
             const roomData = await roomResponse.json()
@@ -378,17 +376,19 @@ function App() {
     setSelectedProfile(profile)
     setShowProfileSelector(false)
     
-    // If there was a pending room ID, set up room state but don't auto-join
-    // User can manually join the room from the menu if they want
-    if (pendingRoomId) {
-      setRoomState({ 
-        roomId: pendingRoomId, 
-        isHost: false, 
-        inRoom: false, // Don't auto-join, just store the room ID
-        showRoomManager: false // Don't auto-show room manager
-      })
-      setPendingRoomId(null)
+    // Clear any saved room state when selecting a new profile
+    // This prevents auto-joining rooms when switching profiles
+    clearRoomState()
+    setRoomState(null)
+    setMultiplayerMode(null)
+    setPendingRoomId(null)
+    
+    // Clear room ID from URL if present - user should explicitly join rooms
+    const currentRoomId = getRoomIdFromUrl()
+    if (currentRoomId) {
+      window.history.replaceState({}, '', window.location.pathname)
     }
+    
     // Don't set multiplayerMode - let user choose what to do from the menu
   }
 

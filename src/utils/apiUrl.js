@@ -19,9 +19,17 @@ export function getApiUrl() {
     return viteServerUrl
   }
   
-  // Always use the same protocol as the current page to avoid mixed content errors
-  // If page is HTTPS, use HTTPS; if HTTP, use HTTP
+  // In production (Vercel), use Render server URL
+  // In development, use localhost
   const hostname = window.location.hostname
+  const isProduction = hostname.includes('vercel.app') || hostname.includes('onrender.com')
+  
+  if (isProduction) {
+    // Production: backend is on Render
+    return 'https://multiplayer-arcade-server.onrender.com'
+  }
+  
+  // Development: use localhost with same protocol
   const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:'
   return `${protocol}//${hostname}:8000`
 }

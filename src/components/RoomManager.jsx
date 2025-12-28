@@ -7,6 +7,7 @@ import Button from './Button'
 import ConfirmationDialog from './ConfirmationDialog'
 import ErrorModal from './ErrorModal'
 import QRCode from './QRCode'
+import { getApiUrl } from '../utils/apiUrl'
 
 // Helper function to get roomId from URL (single source of truth)
 function getRoomIdFromUrl() {
@@ -237,8 +238,7 @@ function RoomManager({
     
     try {
       setLoadingRooms(true)
-      const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:'
-      const serverUrl = `${protocol}//${window.location.hostname}:8000`
+      const serverUrl = getApiUrl()
       const response = await fetch(`${serverUrl}/api/rooms/active`)
       if (response.ok) {
         const rooms = await response.json()
@@ -463,9 +463,8 @@ function RoomManager({
     const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1'
     
     if (isLocalhost) {
-      // Fetch network IP from server - use same hostname and protocol as current page
-      const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:'
-      const serverUrl = `${protocol}//${hostname}:8000`
+      // Fetch network IP from server
+      const serverUrl = getApiUrl()
       
       fetch(`${serverUrl}/api/connection-info`)
         .then(res => res.json())
@@ -667,8 +666,7 @@ function RoomManager({
     setShowCloseRoomDialog(false)
 
     try {
-      const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:'
-      const serverUrl = `${protocol}//${window.location.hostname}:8000`
+      const serverUrl = getApiUrl()
       const response = await fetch(`${serverUrl}/api/admin/close-room/${roomId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
