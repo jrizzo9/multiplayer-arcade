@@ -13,7 +13,9 @@ let socketInstance = null
 export function getSocket() {
   if (!socketInstance) {
     // Use environment variable for production, fallback to localhost for development
-    const serverUrl = import.meta.env.VITE_SERVER_URL || `http://${window.location.hostname}:8000`
+    // Always use the same protocol as the current page to avoid mixed content errors
+    const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:'
+    const serverUrl = import.meta.env.VITE_SERVER_URL || `${protocol}//${window.location.hostname}:8000`
     
     // For Render free tier, use longer timeouts and try polling first (more reliable during wake-up)
     const isProduction = serverUrl.includes('onrender.com') || serverUrl.includes('vercel.app')

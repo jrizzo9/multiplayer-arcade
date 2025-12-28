@@ -47,7 +47,8 @@ function ProfileSelector({ onProfileSelected, onExit }) {
         // The backend will re-mark them as active if they're in multiplayer games
         for (const profile of activeProfiles) {
           try {
-            const apiUrl = import.meta.env.VITE_API_URL || `http://${window.location.hostname}:8000`
+            const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:'
+            const apiUrl = import.meta.env.VITE_API_URL || `${protocol}//${window.location.hostname}:8000`
             const response = await fetch(`${apiUrl}/api/user-profiles/${profile.id}/deactivate`, {
               method: 'POST'
             })
@@ -73,7 +74,8 @@ function ProfileSelector({ onProfileSelected, onExit }) {
       
       if (allProfiles.length === 0) {
         // Check if this is because of an error or just no profiles exist
-        const apiUrl = import.meta.env.VITE_API_URL || `http://${window.location.hostname}:8000`
+        const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:'
+        const apiUrl = import.meta.env.VITE_API_URL || `${protocol}//${window.location.hostname}:8000`
         try {
           // Try to ping the backend to see if it's reachable
           const testResponse = await fetch(`${apiUrl}/api/user-profiles`, { method: 'HEAD' })

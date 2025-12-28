@@ -4,8 +4,10 @@ const getApiUrl = () => {
   if (import.meta.env.VITE_API_URL) {
     return import.meta.env.VITE_API_URL
   }
-  // Use current hostname (works for both localhost and IP access)
-  return `http://${window.location.hostname}:8000`
+  // Use current hostname and protocol (works for both localhost and IP access)
+  // Always use the same protocol as the current page to avoid mixed content errors
+  const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:'
+  return `${protocol}//${window.location.hostname}:8000`
 }
 
 // Cache for profiles
@@ -305,7 +307,9 @@ export async function getProfileStats(profileIdOrName, gameType = null) {
     if (import.meta.env.VITE_API_URL) {
       return import.meta.env.VITE_API_URL
     }
-    return `http://${window.location.hostname}:8000`
+    // Always use the same protocol as the current page to avoid mixed content errors
+    const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:'
+    return `${protocol}//${window.location.hostname}:8000`
   }
   
   try {

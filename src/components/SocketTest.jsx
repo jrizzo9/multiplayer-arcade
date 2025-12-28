@@ -69,7 +69,8 @@ export default function SocketTest() {
       socketRef.current = null
     }
 
-    const serverUrl = getApiUrl() || `http://${window.location.hostname}:8000`
+    const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:'
+    const serverUrl = getApiUrl() || `${protocol}//${window.location.hostname}:8000`
     addLog(`Connecting to ${serverUrl}...`)
     setStatus('connecting')
 

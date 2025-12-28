@@ -9,6 +9,9 @@ import gameStateRouter from './api/game-state.js'
 import debugLogsRouter, { addServerEventLog } from './api/debug-logs.js'
 import { forwardLogToVercel } from './utils/render-log-forwarder.js'
 
+// Debug logging flag - set to true for verbose debugging
+const DEBUG_LOGGING = process.env.DEBUG_LOGGING === 'true' || false
+
 // Wrap console methods to forward logs to Vercel
 const originalConsoleLog = console.log
 const originalConsoleError = console.error
@@ -224,7 +227,9 @@ function findUserProfileIdBySocket(room, socketId) {
 // Helper function to emit room snapshot (canonical room state event)
 function emitRoomSnapshot(room) {
   if (!room) {
-    console.log('[DEBUG] [EMIT-SNAPSHOT] Room is null/undefined, cannot emit')
+    if (DEBUG_LOGGING) {
+      console.log('[DEBUG] [EMIT-SNAPSHOT] Room is null/undefined, cannot emit')
+    }
     return
   }
   
@@ -249,33 +254,36 @@ function emitRoomSnapshot(room) {
     }))
   }
   
-  console.log('[DIAG] [SERVER] [EMIT-SNAPSHOT] Emitting room-snapshot', {
-    roomId: room.id,
-    roomIdType: typeof room.id,
-    playersCount: players.length,
-    snapshotRoomId: snapshot.roomId,
-    snapshotRoomIdType: typeof snapshot.roomId,
-    timestamp: Date.now()
-  })
-  
-  // DEBUG: Check which sockets are in the room before emitting snapshot
-  const roomAdapter = io.sockets.adapter.rooms.get(room.id)
-  const socketsInRoom = roomAdapter ? Array.from(roomAdapter) : []
-  console.log(`[DEBUG] [EMIT-SNAPSHOT] Sockets in room ${room.id} before snapshot emit:`, {
-    roomId: room.id,
-    socketCount: socketsInRoom.length,
-    socketIds: socketsInRoom,
-    playersInSnapshot: snapshot.players.map(p => ({ userProfileId: p.userProfileId, name: p.name, socketId: p.socketId })),
-    timestamp: Date.now()
-  })
+  if (DEBUG_LOGGING) {
+    console.log('[DIAG] [SERVER] [EMIT-SNAPSHOT] Emitting room-snapshot', {
+      roomId: room.id,
+      roomIdType: typeof room.id,
+      playersCount: players.length,
+      snapshotRoomId: snapshot.roomId,
+      snapshotRoomIdType: typeof snapshot.roomId,
+      timestamp: Date.now()
+    })
+    
+    const roomAdapter = io.sockets.adapter.rooms.get(room.id)
+    const socketsInRoom = roomAdapter ? Array.from(roomAdapter) : []
+    console.log(`[DEBUG] [EMIT-SNAPSHOT] Sockets in room ${room.id} before snapshot emit:`, {
+      roomId: room.id,
+      socketCount: socketsInRoom.length,
+      socketIds: socketsInRoom,
+      playersInSnapshot: snapshot.players.map(p => ({ userProfileId: p.userProfileId, name: p.name, socketId: p.socketId })),
+      timestamp: Date.now()
+    })
+  }
   
   // CRITICAL: Use io.to() NOT socket.to() - this broadcasts to ALL sockets in the room
   // socket.to() would exclude the sender, but we want EVERYONE in the room to receive updates
   // This ensures the host and all other players see player list changes in real-time
-  console.log(`[DEBUG] [EMIT-SNAPSHOT] About to emit to io.to('${room.id}')`)
   io.to(room.id).emit('room-snapshot', snapshot)
-  console.log(`[DEBUG] [EMIT-SNAPSHOT] room-snapshot emitted to room ${room.id}`)
-  console.log(`[SOCKET] Emitted room-snapshot for room ${room.id} with ${players.length} players:`, players.map(p => `${p.name} (${p.userProfileId})`))
+  
+  if (DEBUG_LOGGING) {
+    console.log(`[DEBUG] [EMIT-SNAPSHOT] room-snapshot emitted to room ${room.id}`)
+    console.log(`[SOCKET] Emitted room-snapshot for room ${room.id} with ${players.length} players:`, players.map(p => `${p.name} (${p.userProfileId})`))
+  }
 }
 
 // Helper function to broadcast full room list to LOBBY channel
@@ -520,7 +528,9 @@ setInterval(() => {
 }, 24 * 60 * 60 * 1000) // Run once per day
 
 io.on('connection', (socket) => {
-  console.log('Player connected:', socket.id)
+  if (DEBUG_LOGGING) {
+    console.log('Player connected:', socket.id)
+  }
   addServerEventLog(`Player connected: ${socket.id}`, 'info', { socketId: socket.id })
   
   // Join LOBBY namespace by default (for room list updates)
@@ -551,16 +561,16 @@ io.on('connection', (socket) => {
   // Create a new room
   socket.on('create-room', ({ playerName, userProfileId, colorId }) => {
     try {
-      console.log('[DIAG] [SERVER] [CREATE-ROOM] Step A: Received create-room', {
-        socketId: socket.id,
-        playerName: playerName,
-        userProfileId: userProfileId,
-        timestamp: Date.now()
-      })
+      if (DEBUG_LOGGING) {
+        console.log('[DIAG] [SERVER] [CREATE-ROOM] Step A: Received create-room', {
+          socketId: socket.id,
+          playerName: playerName,
+          userProfileId: userProfileId,
+          timestamp: Date.now()
+        })
+      }
       
       const roomId = generateRoomId()
-      
-      console.log(`[SOCKET] Creating room ${roomId} for player ${socket.id} (${playerName})`)
     
     const name = playerName?.trim() || `Player ${Math.floor(Math.random() * 1000)}`
     
@@ -629,24 +639,24 @@ io.on('connection', (socket) => {
     socket.join(roomId)
     socket.leave('LOBBY')
     
-    console.log(`[SOCKET] Room ${roomId} created by ${socket.id} (${name}, profile: ${userProfile.id}) with emoji ${colorInfo?.emoji}. Total rooms in memory: ${rooms.size}`)
-    console.log(`[SOCKET] Room ${roomId} gameState:`, room.gameState.state)
-    console.log(`[SOCKET] Room ${roomId} playerCount:`, room.players.size)
-    
-    console.log('[DIAG] [SERVER] [CREATE-ROOM] Step B: Room created in memory', {
-      roomId: roomId,
-      roomIdType: typeof roomId,
-      playersCount: room.players.size,
-      hostUserProfileId: room.hostUserProfileId,
-      timestamp: Date.now()
-    })
-    
-    console.log('[DIAG] [SERVER] [CREATE-ROOM] Step C: About to emit room-created', {
-      roomId: roomId,
-      roomIdType: typeof roomId,
-      playersCount: room.players.size,
-      timestamp: Date.now()
-    })
+    if (DEBUG_LOGGING) {
+      console.log(`[SOCKET] Room ${roomId} created by ${socket.id} (${name}, profile: ${userProfile.id}) with emoji ${colorInfo?.emoji}. Total rooms in memory: ${rooms.size}`)
+      console.log(`[SOCKET] Room ${roomId} gameState:`, room.gameState.state)
+      console.log(`[SOCKET] Room ${roomId} playerCount:`, room.players.size)
+      console.log('[DIAG] [SERVER] [CREATE-ROOM] Step B: Room created in memory', {
+        roomId: roomId,
+        roomIdType: typeof roomId,
+        playersCount: room.players.size,
+        hostUserProfileId: room.hostUserProfileId,
+        timestamp: Date.now()
+      })
+      console.log('[DIAG] [SERVER] [CREATE-ROOM] Step C: About to emit room-created', {
+        roomId: roomId,
+        roomIdType: typeof roomId,
+        playersCount: room.players.size,
+        timestamp: Date.now()
+      })
+    }
     
     socket.emit('room-created', { 
       roomId, 
@@ -655,9 +665,10 @@ io.on('connection', (socket) => {
     })
     
     // Emit canonical room snapshot
-    console.log('[DIAG] [SERVER] [CREATE-ROOM] Step D: About to emit room-snapshot', {
-      roomId: room.id,
-      roomIdType: typeof room.id,
+    if (DEBUG_LOGGING) {
+      console.log('[DIAG] [SERVER] [CREATE-ROOM] Step D: About to emit room-snapshot', {
+        roomId: room.id,
+        roomIdType: typeof room.id,
       playersCount: room.players.size,
       snapshotPayload: {
         roomId: room.id,
@@ -694,15 +705,15 @@ io.on('connection', (socket) => {
   // Join an existing room
   socket.on('join-room', ({ roomId, playerName, userProfileId, colorId }) => {
     try {
-      console.log('[DIAG] [SERVER] [JOIN-ROOM] Step A: Received join-room', {
-        socketId: socket.id,
-        roomId: roomId,
-        roomIdType: typeof roomId,
-        userProfileId: userProfileId,
-        timestamp: Date.now()
-      })
-      
-      console.log(`[SOCKET] Join room request: roomId=${roomId}, playerName=${playerName}, userProfileId=${userProfileId}, colorId=${colorId}`)
+      if (DEBUG_LOGGING) {
+        console.log('[DIAG] [SERVER] [JOIN-ROOM] Step A: Received join-room', {
+          socketId: socket.id,
+          roomId: roomId,
+          roomIdType: typeof roomId,
+          userProfileId: userProfileId,
+          timestamp: Date.now()
+        })
+      }
       addServerEventLog(`Join room request from ${socket.id}: roomId=${roomId}, playerName=${playerName || 'none'}, userProfileId=${userProfileId || 'none'}`, 'info', { socketId: socket.id, roomId, playerName, userProfileId, colorId })
       
       // Check database first
@@ -722,10 +733,12 @@ io.on('connection', (socket) => {
       // Get the first player (room creator/host) by sorting players by joined_at timestamp
       // The first player to join is the host
       const activeDbPlayers = dbPlayers.filter(p => !p.left_at)
-      console.log(`[DIAG] [SERVER] Loading room from DB: ${activeDbPlayers.length} active players found`, {
-        activePlayers: activeDbPlayers.map(p => ({ userProfileId: p.user_profile_id, name: p.name, socketId: p.socket_id })),
-        timestamp: Date.now()
-      })
+      if (DEBUG_LOGGING) {
+        console.log(`[DIAG] [SERVER] Loading room from DB: ${activeDbPlayers.length} active players found`, {
+          activePlayers: activeDbPlayers.map(p => ({ userProfileId: p.user_profile_id, name: p.name, socketId: p.socket_id })),
+          timestamp: Date.now()
+        })
+      }
       const firstPlayer = activeDbPlayers.length > 0 
         ? activeDbPlayers.sort((a, b) => 
             new Date(a.joined_at || 0) - new Date(b.joined_at || 0)
@@ -800,23 +813,27 @@ io.on('connection', (socket) => {
         }
       }
       rooms.set(roomId, room)
-      console.log(`[SOCKET] Loaded room ${roomId} from database with ${room.players.size} existing players, host: ${room.hostSocketId}`)
-      console.log(`[DIAG] [SERVER] Room loaded from DB - players in Map:`, {
-        roomId: roomId,
-        playersCount: room.players.size,
-        playerKeys: Array.from(room.players.keys()),
-        players: Array.from(room.players.values()).map(p => ({ userProfileId: p.userProfileId, name: p.name })),
-        timestamp: Date.now()
-      })
+      if (DEBUG_LOGGING) {
+        console.log(`[SOCKET] Loaded room ${roomId} from database with ${room.players.size} existing players, host: ${room.hostSocketId}`)
+        console.log(`[DIAG] [SERVER] Room loaded from DB - players in Map:`, {
+          roomId: roomId,
+          playersCount: room.players.size,
+          playerKeys: Array.from(room.players.keys()),
+          players: Array.from(room.players.values()).map(p => ({ userProfileId: p.userProfileId, name: p.name })),
+          timestamp: Date.now()
+        })
+      }
     } else {
       // Room exists in memory - log current state
-      console.log(`[DIAG] [SERVER] Room exists in memory - current state:`, {
-        roomId: roomId,
-        playersCount: room.players.size,
-        playerKeys: Array.from(room.players.keys()),
-        players: Array.from(room.players.values()).map(p => ({ userProfileId: p.userProfileId, name: p.name })),
-        timestamp: Date.now()
-      })
+      if (DEBUG_LOGGING) {
+        console.log(`[DIAG] [SERVER] Room exists in memory - current state:`, {
+          roomId: roomId,
+          playersCount: room.players.size,
+          playerKeys: Array.from(room.players.keys()),
+          players: Array.from(room.players.values()).map(p => ({ userProfileId: p.userProfileId, name: p.name })),
+          timestamp: Date.now()
+        })
+      }
     }
     
     if (room.players.size >= 4) {
@@ -868,17 +885,19 @@ io.on('connection', (socket) => {
       }
       room.players.set(userProfile.id, playerData)
       room.socketIds.set(userProfile.id, socket.id)
-      console.log(`[DIAG] [SERVER] New player added to room.players Map:`, {
-        userProfileId: userProfile.id,
-        name: name,
-        roomPlayersCount: room.players.size,
-        allPlayerKeys: Array.from(room.players.keys()),
-        allPlayers: Array.from(room.players.values()).map(p => ({ userProfileId: p.userProfileId, name: p.name })),
+      if (DEBUG_LOGGING) {
+        console.log(`[DIAG] [SERVER] New player added to room.players Map:`, {
+          userProfileId: userProfile.id,
+          name: name,
+          roomPlayersCount: room.players.size,
+          allPlayerKeys: Array.from(room.players.keys()),
+          allPlayers: Array.from(room.players.values()).map(p => ({ userProfileId: p.userProfileId, name: p.name })),
         timestamp: Date.now()
       })
     }
     
-    console.log('[DIAG] [SERVER] [JOIN-ROOM] Step B: Player added to room', {
+    if (DEBUG_LOGGING) {
+      console.log('[DIAG] [SERVER] [JOIN-ROOM] Step B: Player added to room', {
       roomId: roomId,
       roomIdType: typeof roomId,
       playersCount: room.players.size,
@@ -1012,28 +1031,28 @@ io.on('connection', (socket) => {
       userProfile.id && 
       String(room.hostUserProfileId) === String(userProfile.id)
     
-    console.log(`[DIAG] [SERVER] Creating playersArray for emit:`, {
-      roomPlayersMapSize: room.players.size,
-      playersArrayLength: playersArray.length,
-      playersArray: playersArray.map(p => ({ userProfileId: p.userProfileId, name: p.name, socketId: p.socketId })),
-      roomPlayerKeys: Array.from(room.players.keys()),
-      timestamp: Date.now()
-    })
-    
-    console.log(`[SOCKET] Emitting player-joined to room ${roomId}`, {
-      playerCount: playersArray.length,
-      players: playersArray.map(p => ({ userProfileId: p.userProfileId, name: p.name, socketId: p.socketId })),
-      roomPlayerCount: room.players.size,
-      joiningPlayerIsHost,
-      hostUserProfileId: room.hostUserProfileId,
-      joiningUserProfileId: userProfile.id
-    })
-    
-    console.log('[DIAG] [SERVER] [JOIN-ROOM] Step C: About to emit player-joined', {
-      roomId: roomId,
-      playersCount: playersArray.length,
-      timestamp: Date.now()
-    })
+    if (DEBUG_LOGGING) {
+      console.log(`[DIAG] [SERVER] Creating playersArray for emit:`, {
+        roomPlayersMapSize: room.players.size,
+        playersArrayLength: playersArray.length,
+        playersArray: playersArray.map(p => ({ userProfileId: p.userProfileId, name: p.name, socketId: p.socketId })),
+        roomPlayerKeys: Array.from(room.players.keys()),
+        timestamp: Date.now()
+      })
+      console.log(`[SOCKET] Emitting player-joined to room ${roomId}`, {
+        playerCount: playersArray.length,
+        players: playersArray.map(p => ({ userProfileId: p.userProfileId, name: p.name, socketId: p.socketId })),
+        roomPlayerCount: room.players.size,
+        joiningPlayerIsHost,
+        hostUserProfileId: room.hostUserProfileId,
+        joiningUserProfileId: userProfile.id
+      })
+      console.log('[DIAG] [SERVER] [JOIN-ROOM] Step C: About to emit player-joined', {
+        roomId: roomId,
+        playersCount: playersArray.length,
+        timestamp: Date.now()
+      })
+    }
     
     // Emit player-joined event to ALL sockets in the room (including host and joining player)
     // This ensures the host sees the new player immediately
@@ -1046,10 +1065,11 @@ io.on('connection', (socket) => {
     }
     // Emit to all sockets in the room (including host) so host sees new player immediately
     io.to(roomId).emit('player-joined', playerJoinedData)
-    console.log(`[SOCKET] Broadcasted player-joined to all players in room ${roomId} (including host)`)
     
     // Emit canonical room snapshot after any join
-    console.log('[DIAG] [SERVER] [JOIN-ROOM] Step D: About to emit room-snapshot', {
+    if (DEBUG_LOGGING) {
+      console.log(`[SOCKET] Broadcasted player-joined to all players in room ${roomId} (including host)`)
+      console.log('[DIAG] [SERVER] [JOIN-ROOM] Step D: About to emit room-snapshot', {
       roomId: room.id,
       roomIdType: typeof room.id,
       playersCount: room.players.size,
@@ -2351,9 +2371,12 @@ io.on('connection', (socket) => {
       players: remainingPlayers,
       roomId: roomId // Include roomId so frontend can update the correct room (same pattern as player-joined)
     }
-    console.log(`[DEBUG] [${reason.toUpperCase()}] player-left payload:`, JSON.stringify(playerLeftPayload, null, 2))
     io.to(roomId).emit('player-left', playerLeftPayload)
-    console.log(`[DEBUG] [${reason.toUpperCase()}] player-left event emitted to room ${roomId}`)
+    
+    if (DEBUG_LOGGING) {
+      console.log(`[DEBUG] [${reason.toUpperCase()}] player-left payload:`, JSON.stringify(playerLeftPayload, null, 2))
+      console.log(`[DEBUG] [${reason.toUpperCase()}] player-left event emitted to room ${roomId}`)
+    }
     
     // Step 4: Emit canonical room snapshot AFTER removing player from Map (so snapshot is correct)
     // CRITICAL: Must emit BEFORE socket.leave() so all remaining players (including host) receive the update
@@ -2363,20 +2386,23 @@ io.on('connection', (socket) => {
     if (snapshotPlayerCount !== remainingPlayers.length) {
       console.error(`[${reason.toUpperCase()}] CRITICAL: Snapshot will have wrong player count! room.players.size=${snapshotPlayerCount}, remainingPlayers.length=${remainingPlayers.length}`)
     }
-    console.log(`[DEBUG] [${reason.toUpperCase()}] About to emit room-snapshot for room ${roomId} with ${snapshotPlayerCount} players in room Map`)
+    if (DEBUG_LOGGING) {
+      console.log(`[DEBUG] [${reason.toUpperCase()}] About to emit room-snapshot for room ${roomId} with ${snapshotPlayerCount} players in room Map`)
+    }
     emitRoomSnapshot(room)
-    console.log(`[${reason.toUpperCase()}] Emitted room-snapshot to room ${roomId} with ${room.players.size} remaining players`)
     addServerEventLog(`Emitted room-snapshot to room ${roomId} after player leave`, 'info', { roomId, remainingPlayerCount: room.players.size, leavingUserProfileId: userProfileId, reason })
     
     // DEBUG: Check which sockets are still in the room after emitting
     const roomAdapterAfter = io.sockets.adapter.rooms.get(roomId)
     const socketsInRoomAfter = roomAdapterAfter ? Array.from(roomAdapterAfter) : []
-    console.log(`[DEBUG] [${reason.toUpperCase()}] Sockets in room ${roomId} after emits (before socket.leave):`, {
-      roomId,
-      socketCount: socketsInRoomAfter.length,
-      socketIds: socketsInRoomAfter,
-      timestamp: Date.now()
-    })
+    if (DEBUG_LOGGING) {
+      console.log(`[DEBUG] [${reason.toUpperCase()}] Sockets in room ${roomId} after emits (before socket.leave):`, {
+        roomId,
+        socketCount: socketsInRoomAfter.length,
+        socketIds: socketsInRoomAfter,
+        timestamp: Date.now()
+      })
+    }
     
     // Step 5: Send confirmation to leaving player BEFORE removing from Socket.IO room
     // This allows the leaving player to update their UI immediately
@@ -2612,7 +2638,9 @@ io.on('connection', (socket) => {
   // Handle disconnect
   socket.on('disconnect', () => {
     try {
-      console.log('Player disconnected:', socket.id)
+      if (DEBUG_LOGGING) {
+        console.log('Player disconnected:', socket.id)
+      }
       addServerEventLog(`Player disconnected: ${socket.id}`, 'info', { socketId: socket.id })
     
     // Update user count when someone disconnects
@@ -2700,8 +2728,11 @@ io.on('connection', (socket) => {
         addServerEventLog(`Removing player ${userProfileId} from room ${roomId}, isHost: ${isHost}`, 'info', { socketId: socket.id, userProfileId, roomId, playerName, isHost })
         
         // Remove from ready players and cancel countdown if needed
-        // Use optional chaining to safely handle cases where readyPlayers might be undefined
-        room.readyPlayers?.delete(userProfileId)
+        // Ensure readyPlayers exists (safety check for rooms created before this was added)
+        if (!room.readyPlayers) {
+          room.readyPlayers = new Set()
+        }
+        room.readyPlayers.delete(userProfileId)
         if (room.countdownInterval) {
           clearInterval(room.countdownInterval)
           room.countdownInterval = null
@@ -2886,8 +2917,6 @@ app.get('/api/debug/rooms', (req, res) => {
 // MUST be defined before /api/rooms/:roomId to avoid route conflicts
 app.get('/api/rooms/active', (req, res) => {
   try {
-    console.log('[API] Fetching active rooms from in-memory Map and database')
-    
     // Get active rooms from in-memory Map (real-time data)
     // Get ended room IDs from cache (refresh if stale)
     const now = Date.now()
@@ -2895,7 +2924,7 @@ app.get('/api/rooms/active', (req, res) => {
       const endedRoomsQuery = db.prepare(`SELECT id FROM rooms WHERE state = 'ended'`).all()
       endedRoomIdsCache = new Set(endedRoomsQuery.map(r => r.id))
       endedRoomIdsCacheTime = now
-      if (endedRoomIdsCache.size > 0) {
+      if (DEBUG_LOGGING && endedRoomIdsCache.size > 0) {
         console.log(`[API] Refreshed ended rooms cache: ${endedRoomIdsCache.size} ended rooms`)
       }
     }
@@ -2911,7 +2940,9 @@ app.get('/api/rooms/active', (req, res) => {
       .filter(([roomId, room]) => {
         // Filter out ended rooms (check both cache and specific query for memory rooms)
         if (endedRoomIdsCache.has(roomId) || endedMemoryRoomIds.has(roomId)) {
-          console.log(`[API] Filtering out ended room from memory: ${roomId}`)
+          if (DEBUG_LOGGING) {
+            console.log(`[API] Filtering out ended room from memory: ${roomId}`)
+          }
           // Also remove from in-memory Map if it's marked as ended
           rooms.delete(roomId)
           // Update cache immediately
@@ -2960,7 +2991,9 @@ app.get('/api/rooms/active', (req, res) => {
     const allActiveRooms = [...memoryRooms, ...uniqueDbRooms]
       .sort((a, b) => b.playerCount - a.playerCount) // Sort by player count (most players first)
     
-    console.log('[API] Returning', allActiveRooms.length, 'active rooms:', allActiveRooms.map(r => `${r.id} (${r.playerCount} players, ${r.state}, ${r.source})`))
+    if (DEBUG_LOGGING) {
+      console.log('[API] Returning', allActiveRooms.length, 'active rooms:', allActiveRooms.map(r => `${r.id} (${r.playerCount} players, ${r.state}, ${r.source})`))
+    }
     res.json(allActiveRooms)
   } catch (error) {
     console.error('[API] Error fetching active rooms:', error)

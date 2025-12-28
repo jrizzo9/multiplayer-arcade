@@ -5,7 +5,9 @@ import soundManager from '../utils/sounds'
 
 // Helper function to get server URL
 function getServerUrl() {
-  return `http://${window.location.hostname}:8000`
+  // Always use the same protocol as the current page to avoid mixed content errors
+  const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:'
+  return `${protocol}//${window.location.hostname}:8000`
 }
 
 // Helper function to get roomId from URL

@@ -514,7 +514,8 @@ function Snake({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName,
         if (winner === 1 || winner === 2) {
           const winnerPlayer = players[winner - 1]
           if (winnerPlayer?.userProfileId) {
-            const serverUrl = `http://${window.location.hostname}:8000`
+            const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:'
+            const serverUrl = `${protocol}//${window.location.hostname}:8000`
             fetch(`${serverUrl}/api/wins/record`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -562,7 +563,8 @@ function Snake({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName,
           // Record win for player 1
           const winnerPlayer = players[0]
           if (winnerPlayer?.userProfileId) {
-            const serverUrl = `http://${window.location.hostname}:8000`
+            const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:'
+            const serverUrl = `${protocol}//${window.location.hostname}:8000`
             fetch(`${serverUrl}/api/wins/record`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -605,7 +607,8 @@ function Snake({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName,
           // Record win for player 2
           const winnerPlayer = players[1]
           if (winnerPlayer?.userProfileId) {
-            const serverUrl = `http://${window.location.hostname}:8000`
+            const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:'
+            const serverUrl = `${protocol}//${window.location.hostname}:8000`
             fetch(`${serverUrl}/api/wins/record`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },

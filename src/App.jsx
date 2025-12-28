@@ -76,7 +76,8 @@ function App() {
         if (savedRoomState && savedRoomId) {
           try {
             // Verify room still exists and user is still in it
-            const apiUrl = `http://${window.location.hostname}:8000`
+            const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:'
+            const apiUrl = `${protocol}//${window.location.hostname}:8000`
             const roomResponse = await fetch(`${apiUrl}/api/rooms/${savedRoomId}`)
             if (roomResponse.ok) {
               const roomData = await roomResponse.json()
@@ -143,7 +144,8 @@ function App() {
         if (roomId && (!savedRoomState || savedRoomState.roomId !== roomId)) {
           try {
             // Check if this profile is already in the room
-            const apiUrl = `http://${window.location.hostname}:8000`
+            const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:'
+            const apiUrl = `${protocol}//${window.location.hostname}:8000`
             const roomResponse = await fetch(`${apiUrl}/api/rooms/${roomId}`)
             if (roomResponse.ok) {
               const roomData = await roomResponse.json()
@@ -237,7 +239,8 @@ function App() {
       // Check if user is already in this room
       const checkRoomStatus = async () => {
         try {
-          const apiUrl = `http://${window.location.hostname}:8000`
+          const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:'
+          const apiUrl = `${protocol}//${window.location.hostname}:8000`
           const roomResponse = await fetch(`${apiUrl}/api/rooms/${roomId}`)
           if (roomResponse.ok) {
             const roomData = await roomResponse.json()
