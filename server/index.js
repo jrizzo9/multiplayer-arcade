@@ -7,6 +7,33 @@ import { dbHelpers } from './db.js'
 import db from './db.js'
 import gameStateRouter from './api/game-state.js'
 import debugLogsRouter, { addServerEventLog } from './api/debug-logs.js'
+import { forwardLogToVercel } from './utils/render-log-forwarder.js'
+
+// Wrap console methods to forward logs to Vercel
+const originalConsoleLog = console.log
+const originalConsoleError = console.error
+const originalConsoleWarn = console.warn
+
+console.log = function(...args) {
+  originalConsoleLog.apply(console, args)
+  if (process.env.VERCEL_LOG_ENDPOINT) {
+    forwardLogToVercel('info', args.join(' '), { args: args.length > 1 ? args.slice(1) : [] })
+  }
+}
+
+console.error = function(...args) {
+  originalConsoleError.apply(console, args)
+  if (process.env.VERCEL_LOG_ENDPOINT) {
+    forwardLogToVercel('error', args.join(' '), { args: args.length > 1 ? args.slice(1) : [] })
+  }
+}
+
+console.warn = function(...args) {
+  originalConsoleWarn.apply(console, args)
+  if (process.env.VERCEL_LOG_ENDPOINT) {
+    forwardLogToVercel('warn', args.join(' '), { args: args.length > 1 ? args.slice(1) : [] })
+  }
+}
 
 const app = express()
 const httpServer = createServer(app)

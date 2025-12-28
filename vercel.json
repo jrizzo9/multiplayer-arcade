@@ -4,6 +4,11 @@
       "source": "/(.*)",
       "destination": "/index.html"
     }
-  ]
+  ],
+  "functions": {
+    "api/render-logs.js": {
+      "maxDuration": 10
+    }
+  }
 }
 
