@@ -36,3 +36,4 @@ server/kiwi.db.backup
 *.sln
 *.sw?
 
+.vercel
