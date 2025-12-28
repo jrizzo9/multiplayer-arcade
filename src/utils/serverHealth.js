@@ -49,6 +49,10 @@ export async function checkServerHealth() {
 
     if (response.ok) {
       const data = await response.json()
+      
+      // Debug: Log the response to see what we're getting
+      console.log('[ServerHealth] Health check response:', data)
+      
       const status = {
         status: 'online',
         timestamp: Date.now(),
@@ -61,6 +65,19 @@ export async function checkServerHealth() {
         render: data.render || null,
         environment: data.environment || null
       }
+      
+      // Debug: Log what we're storing
+      console.log('[ServerHealth] Parsed status:', {
+        hasDatabase: !!status.database,
+        hasSockets: !!status.sockets,
+        hasRender: !!status.render,
+        hasEnvironment: !!status.environment,
+        database: status.database,
+        sockets: status.sockets,
+        render: status.render,
+        environment: status.environment
+      })
+      
       lastHealthStatus = status
       return status
     } else {
