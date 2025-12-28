@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: multiplayer-arcade-server
+    runtime: node
+    plan: starter
+    buildCommand: cd server && npm install
+    startCommand: cd server && npm start
+    envVars:
+      - key: PORT
+        value: 8000
+      - key: CLIENT_URL
+        value: https://your-frontend-domain.vercel.app
+      - key: NODE_ENV
+        value: production
+
