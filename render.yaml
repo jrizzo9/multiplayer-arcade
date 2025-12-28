@@ -9,7 +9,7 @@ services:
       - key: PORT
         value: 8000
       - key: CLIENT_URL
-        value: https://your-frontend-domain.vercel.app
+        value: https://multiplayer-arcade.vercel.app
       - key: NODE_ENV
         value: production
 
