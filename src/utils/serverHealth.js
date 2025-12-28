@@ -53,8 +53,13 @@ export async function checkServerHealth() {
         status: 'online',
         timestamp: Date.now(),
         responseTime,
+        latency: responseTime, // Alias for clarity
         uptime: data.uptime,
-        serverTime: data.timestamp
+        serverTime: data.timestamp,
+        database: data.database || null,
+        sockets: data.sockets || null,
+        render: data.render || null,
+        environment: data.environment || null
       }
       lastHealthStatus = status
       return status

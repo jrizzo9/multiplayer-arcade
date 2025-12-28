@@ -14,14 +14,25 @@ export function getSocket() {
   if (!socketInstance) {
     // Use environment variable for production, fallback to localhost for development
     const serverUrl = import.meta.env.VITE_SERVER_URL || `http://${window.location.hostname}:8000`
+    
+    // For Render free tier, use longer timeouts and try polling first (more reliable during wake-up)
+    const isProduction = serverUrl.includes('onrender.com') || serverUrl.includes('vercel.app')
+    
     socketInstance = io(serverUrl, {
-      transports: ['websocket', 'polling'],
+      // Try polling first, then upgrade to websocket (more reliable during server wake-up)
+      transports: isProduction ? ['polling', 'websocket'] : ['websocket', 'polling'],
       reconnection: true,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 10000, // Increased max delay for Render wake-up
-      reconnectionAttempts: 15, // Increased attempts for Render free tier (can take ~60s to wake)
+      reconnectionAttempts: 20, // Increased attempts for Render free tier (can take ~60s to wake)
       forceNew: false,
-      timeout: 20000
+      timeout: isProduction ? 60000 : 20000, // 60s timeout for production (Render wake-up), 20s for dev
+      // Additional options for better reliability
+      upgrade: true, // Allow transport upgrade
+      rememberUpgrade: false, // Don't remember upgrade (start fresh each time)
+      // Increase ping timeout for slow connections
+      pingTimeout: isProduction ? 60000 : 20000,
+      pingInterval: 25000
     })
 
     // Log connection events for debugging
@@ -45,11 +56,21 @@ export function getSocket() {
 
     socketInstance.on('connect_error', (error) => {
       console.error('[Socket] Connection error:', error.message)
+      console.error('[Socket] Error details:', {
+        type: error.type,
+        description: error.description,
+        context: error.context
+      })
       // Check server health to see if it's waking up
       checkServerHealth().then(status => {
+        console.log('[Socket] Server health check after error:', status)
         if (status.status === 'waking' || status.status === 'offline') {
           console.log('[Socket] Server appears to be waking up, will retry...')
+        } else if (status.status === 'online') {
+          console.warn('[Socket] Server health check shows online, but socket connection failed. This may indicate a WebSocket/CORS issue.')
         }
+      }).catch(err => {
+        console.error('[Socket] Error checking server health:', err)
       })
     })
 

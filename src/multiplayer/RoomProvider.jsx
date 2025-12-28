@@ -27,39 +27,54 @@ export function RoomProvider({ children }) {
 
   // Initialize socket connection and track connection status
   useEffect(() => {
-    const socket = getSocket()
-    socketRef.current = socket
+    // Wait a bit for server to be ready if it's waking up
+    const initSocket = async () => {
+      // Check server health first
+      const { checkServerHealth, waitForServer } = await import('../utils/serverHealth')
+      const healthStatus = await checkServerHealth()
+      
+      // If server is offline or waking, wait for it
+      if (healthStatus.status === 'offline' || healthStatus.status === 'waking') {
+        console.log('[RoomProvider] Server is offline or waking, waiting...')
+        const serverReady = await waitForServer(30000) // Wait up to 30 seconds
+        if (!serverReady) {
+          console.warn('[RoomProvider] Server did not wake up in time, connecting anyway...')
+        }
+      }
+      
+      const socket = getSocket()
+      socketRef.current = socket
 
-    // Set initial connection status
-    setSocketConnected(socket.connected)
+      // Set initial connection status
+      setSocketConnected(socket.connected)
 
-    console.log('[DIAG] [ROOM-PROVIDER] useEffect running', {
-      listenersInitialized: listenersInitializedRef.current,
-      socketId: socket.id,
-      socketConnected: socket.connected,
-      timestamp: Date.now()
-    })
+      console.log('[DIAG] [ROOM-PROVIDER] useEffect running', {
+        listenersInitialized: listenersInitializedRef.current,
+        socketId: socket.id,
+        socketConnected: socket.connected,
+        timestamp: Date.now()
+      })
 
-    // Socket connection event handlers
-    socket.on('connect', () => {
-      console.log('[RoomProvider] Socket connected:', socket.id)
-      setSocketConnected(true)
-    })
+      // Socket connection event handlers
+      socket.on('connect', () => {
+        console.log('[RoomProvider] Socket connected:', socket.id)
+        setSocketConnected(true)
+      })
 
-    socket.on('disconnect', (reason) => {
-      console.log('[RoomProvider] Socket disconnected:', reason)
-      setSocketConnected(false)
-      // Reset room connection state on disconnect
-      roomJoinedRef.current = false
-      setActiveRoomId(null)
-    })
+      socket.on('disconnect', (reason) => {
+        console.log('[RoomProvider] Socket disconnected:', reason)
+        setSocketConnected(false)
+        // Reset room connection state on disconnect
+        roomJoinedRef.current = false
+        setActiveRoomId(null)
+      })
 
-    socket.on('connect_error', (error) => {
-      console.error('[RoomProvider] Socket connection error:', error)
-      setSocketConnected(false)
-    })
+      socket.on('connect_error', (error) => {
+        console.error('[RoomProvider] Socket connection error:', error)
+        setSocketConnected(false)
+      })
 
-    if (!listenersInitializedRef.current) {
+      if (!listenersInitializedRef.current) {
       // Count listeners before registering (if method exists)
       const listenerCountBefore = typeof socket.listenerCount === 'function' 
         ? socket.listenerCount('room-snapshot')
@@ -453,8 +468,18 @@ export function RoomProvider({ children }) {
         })
       })
 
-      listenersInitializedRef.current = true
+        listenersInitializedRef.current = true
+      }
     }
+
+    // Call the async initialization
+    initSocket().catch(error => {
+      console.error('[RoomProvider] Error initializing socket:', error)
+      // Still try to get socket even if health check fails
+      const socket = getSocket()
+      socketRef.current = socket
+      setSocketConnected(socket.connected)
+    })
 
     return () => {
       // Don't remove listeners - socket is shared and other components may need them

@@ -81,14 +81,64 @@ function getLocalNetworkIP() {
   return null
 }
 
-// Health check endpoint - returns server uptime
+// Health check endpoint - returns server uptime and system status
 const serverStartTime = Date.now()
-app.get('/health', (req, res) => {
+app.get('/health', async (req, res) => {
   const uptime = Date.now() - serverStartTime
   const uptimeSeconds = Math.floor(uptime / 1000)
   const uptimeMinutes = Math.floor(uptimeSeconds / 60)
   const uptimeHours = Math.floor(uptimeMinutes / 60)
   const uptimeDays = Math.floor(uptimeHours / 24)
+  
+  // Check database status
+  let dbStatus = 'unknown'
+  let dbError = null
+  let activeRooms = 0
+  let activePlayers = 0
+  let totalRooms = 0
+  
+  try {
+    // Quick database check
+    const dbCheck = db.prepare('SELECT 1 as test').get()
+    dbStatus = dbCheck ? 'connected' : 'error'
+    
+    // Get active rooms count
+    const activeRoomsResult = db.prepare(`
+      SELECT COUNT(DISTINCT room_id) as count 
+      FROM players 
+      WHERE left_at IS NULL
+    `).get()
+    activeRooms = activeRoomsResult?.count || 0
+    
+    // Get active players count
+    const activePlayersResult = db.prepare(`
+      SELECT COUNT(*) as count 
+      FROM players 
+      WHERE left_at IS NULL
+    `).get()
+    activePlayers = activePlayersResult?.count || 0
+    
+    // Get total rooms in database
+    const totalRoomsResult = db.prepare('SELECT COUNT(*) as count FROM rooms').get()
+    totalRooms = totalRoomsResult?.count || 0
+  } catch (error) {
+    dbStatus = 'error'
+    dbError = error.message
+    console.error('[Health] Database check failed:', error)
+  }
+  
+  // Get socket connection stats
+  const socketStats = {
+    totalConnections: io.sockets.sockets.size,
+    activeRooms: rooms.size
+  }
+  
+  // Get Render service info (if available)
+  const renderInfo = {
+    serviceName: process.env.RENDER_SERVICE_NAME || 'multiplayer-arcade-server',
+    environment: process.env.NODE_ENV || 'production',
+    region: process.env.RENDER_REGION || 'unknown'
+  }
   
   res.status(200).json({
     status: 'ok',
@@ -100,7 +150,20 @@ app.get('/health', (req, res) => {
       days: uptimeDays,
       formatted: `${uptimeDays}d ${uptimeHours % 24}h ${uptimeMinutes % 60}m ${uptimeSeconds % 60}s`
     },
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    database: {
+      status: dbStatus,
+      error: dbError,
+      activeRooms,
+      activePlayers,
+      totalRooms
+    },
+    sockets: socketStats,
+    render: renderInfo,
+    environment: {
+      nodeVersion: process.version,
+      platform: process.platform
+    }
   })
 })
 

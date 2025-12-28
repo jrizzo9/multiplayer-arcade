@@ -102,7 +102,7 @@ export default function ServerStatus() {
 
   return (
     <div className="fixed bottom-4 right-4 z-50">
-      <div className="bg-black/90 text-white rounded-lg shadow-lg border border-white/20 min-w-[200px]">
+      <div className="bg-black/90 text-white rounded-lg shadow-lg border border-white/20 min-w-[280px] max-w-[400px]">
         {/* Status Bar */}
         <div
           className={`flex items-center justify-between px-4 py-2 cursor-pointer ${getStatusColor()}`}
@@ -117,49 +117,152 @@ export default function ServerStatus() {
 
         {/* Expanded Details */}
         {isExpanded && (
-          <div className="px-4 py-3 space-y-2 text-xs border-t border-white/10">
-            {healthStatus.responseTime !== null && (
-              <div className="flex justify-between">
-                <span className="opacity-75">Response Time:</span>
-                <span>{healthStatus.responseTime}ms</span>
-              </div>
-            )}
-            
-            {healthStatus.timestamp && (
-              <div className="flex justify-between">
-                <span className="opacity-75">Last Check:</span>
-                <span>{formatTimestamp(healthStatus.timestamp)}</span>
+          <div className="px-4 py-3 space-y-2 text-xs border-t border-white/10 max-h-[70vh] overflow-y-auto">
+            {/* Latency/Performance */}
+            <div className="space-y-1 pb-2 border-b border-white/10">
+              <div className="font-semibold text-xs mb-1 opacity-90">Performance</div>
+              {healthStatus.responseTime !== null && (
+                <div className="flex justify-between">
+                  <span className="opacity-75">Latency:</span>
+                  <span className={healthStatus.responseTime < 200 ? 'text-green-400' : healthStatus.responseTime < 500 ? 'text-yellow-400' : 'text-red-400'}>
+                    {healthStatus.responseTime}ms
+                  </span>
+                </div>
+              )}
+              
+              {healthStatus.timestamp && (
+                <div className="flex justify-between">
+                  <span className="opacity-75">Last Check:</span>
+                  <span>{formatTimestamp(healthStatus.timestamp)}</span>
+                </div>
+              )}
+
+              {healthStatus.uptime && (
+                <div className="flex justify-between">
+                  <span className="opacity-75">Server Uptime:</span>
+                  <span>{healthStatus.uptime.formatted}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Render Service Info */}
+            {healthStatus.render && (
+              <div className="space-y-1 pt-2 pb-2 border-b border-white/10">
+                <div className="font-semibold text-xs mb-1 opacity-90">Render Service</div>
+                <div className="flex justify-between">
+                  <span className="opacity-75">Service:</span>
+                  <span>{healthStatus.render.serviceName || 'N/A'}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="opacity-75">Environment:</span>
+                  <span className="uppercase">{healthStatus.render.environment || 'N/A'}</span>
+                </div>
+                {healthStatus.render.region && (
+                  <div className="flex justify-between">
+                    <span className="opacity-75">Region:</span>
+                    <span>{healthStatus.render.region}</span>
+                  </div>
+                )}
               </div>
             )}
 
-            {healthStatus.uptime && (
-              <div className="flex justify-between">
-                <span className="opacity-75">Server Uptime:</span>
-                <span>{healthStatus.uptime.formatted}</span>
+            {/* Database Status */}
+            {healthStatus.database && (
+              <div className="space-y-1 pt-2 pb-2 border-b border-white/10">
+                <div className="font-semibold text-xs mb-1 opacity-90">Database</div>
+                <div className="flex justify-between">
+                  <span className="opacity-75">Status:</span>
+                  <span className={healthStatus.database.status === 'connected' ? 'text-green-400' : 'text-red-400'}>
+                    {healthStatus.database.status === 'connected' ? '✓ Connected' : '✗ Error'}
+                  </span>
+                </div>
+                {healthStatus.database.activeRooms !== undefined && (
+                  <div className="flex justify-between">
+                    <span className="opacity-75">Active Rooms:</span>
+                    <span>{healthStatus.database.activeRooms}</span>
+                  </div>
+                )}
+                {healthStatus.database.activePlayers !== undefined && (
+                  <div className="flex justify-between">
+                    <span className="opacity-75">Active Players:</span>
+                    <span>{healthStatus.database.activePlayers}</span>
+                  </div>
+                )}
+                {healthStatus.database.totalRooms !== undefined && (
+                  <div className="flex justify-between">
+                    <span className="opacity-75">Total Rooms:</span>
+                    <span>{healthStatus.database.totalRooms}</span>
+                  </div>
+                )}
+                {healthStatus.database.error && (
+                  <div className="mt-1 text-red-300 text-xs">
+                    {healthStatus.database.error}
+                  </div>
+                )}
               </div>
             )}
 
+            {/* Socket Connections */}
+            {healthStatus.sockets && (
+              <div className="space-y-1 pt-2 pb-2 border-b border-white/10">
+                <div className="font-semibold text-xs mb-1 opacity-90">WebSocket</div>
+                <div className="flex justify-between">
+                  <span className="opacity-75">Connections:</span>
+                  <span>{healthStatus.sockets.totalConnections || 0}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="opacity-75">Active Rooms:</span>
+                  <span>{healthStatus.sockets.activeRooms || 0}</span>
+                </div>
+              </div>
+            )}
+
+            {/* Environment Info */}
+            {healthStatus.environment && (
+              <div className="space-y-1 pt-2 pb-2 border-b border-white/10">
+                <div className="font-semibold text-xs mb-1 opacity-90">Environment</div>
+                <div className="flex justify-between">
+                  <span className="opacity-75">Node.js:</span>
+                  <span>{healthStatus.environment.nodeVersion || 'N/A'}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="opacity-75">Platform:</span>
+                  <span>{healthStatus.environment.platform || 'N/A'}</span>
+                </div>
+              </div>
+            )}
+
+            {/* Error Display */}
             {healthStatus.error && (
               <div className="mt-2 pt-2 border-t border-white/10">
-                <div className="opacity-75 mb-1">Error:</div>
+                <div className="opacity-75 mb-1 font-semibold">Error:</div>
                 <div className="text-red-300 text-xs">{healthStatus.error}</div>
               </div>
             )}
 
-            {healthStatus.status === 'offline' && (
-              <button
-                onClick={handleWakeServer}
-                className="w-full mt-2 px-3 py-1.5 bg-yellow-600 hover:bg-yellow-700 rounded text-xs font-medium transition-colors"
-              >
-                Wake Server
-              </button>
-            )}
+            {/* Actions */}
+            <div className="pt-2 space-y-2">
+              {healthStatus.status === 'offline' && (
+                <button
+                  onClick={handleWakeServer}
+                  className="w-full px-3 py-1.5 bg-yellow-600 hover:bg-yellow-700 rounded text-xs font-medium transition-colors"
+                >
+                  Wake Server
+                </button>
+              )}
 
-            {healthStatus.status === 'waking' && (
-              <div className="mt-2 text-center text-xs opacity-75">
-                Waiting for server to wake up...
-              </div>
-            )}
+              {healthStatus.status === 'waking' && (
+                <div className="text-center text-xs opacity-75">
+                  Waiting for server to wake up...
+                </div>
+              )}
+
+              {healthStatus.status === 'online' && (
+                <div className="text-center text-xs opacity-75">
+                  All systems operational
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>
