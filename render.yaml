@@ -2,7 +2,7 @@ services:
   - type: web
     name: multiplayer-arcade-server
     runtime: node
-    plan: starter
+    # Free tier - no payment required
     buildCommand: cd server && npm install
     startCommand: cd server && npm start
     envVars:
