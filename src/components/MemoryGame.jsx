@@ -12,10 +12,35 @@ const GAME_HEIGHT = 600
 const CARD_ROWS = 4
 const CARD_COLS = 4
 const TOTAL_CARDS = CARD_ROWS * CARD_COLS
-const CARD_PAIRS = TOTAL_CARDS / 2
+const BASE_CARD_PAIRS = TOTAL_CARDS / 2 // 8 pairs for first game
 
-// Card symbols/emojis for matching
-const CARD_SYMBOLS = ['🔴', '🔵', '🟢', '🟡', '🟣', '🟠', '⚫', '⚪', '🔶', '🔷', '🔸', '🔹', '🔺', '🔻', '💎', '⭐']
+// Card symbols - geometric patterns
+const CARD_SYMBOLS = [
+  'circle', 'square', 'triangle', 'diamond', 
+  'hexagon', 'star', 'cross', 'plus',
+  'wave', 'grid', 'dots', 'lines',
+  'spiral', 'arrow', 'chevron', 'zigzag'
+]
+
+// Color palette for symbols
+const SYMBOL_COLORS = [
+  '#3B82F6', // blue
+  '#EF4444', // red
+  '#10B981', // green
+  '#F59E0B', // amber
+  '#8B5CF6', // purple
+  '#EC4899', // pink
+  '#06B6D4', // cyan
+  '#F97316', // orange
+  '#6366F1', // indigo
+  '#14B8A6', // teal
+  '#F43F5E', // rose
+  '#84CC16', // lime
+  '#A855F7', // violet
+  '#22C55E', // emerald
+  '#0EA5E9', // sky
+  '#FB7185'  // pink-400
+]
 
 function MemoryGame({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, onScoreUpdate }) {
   // Get room state from multiplayer foundation
@@ -35,6 +60,7 @@ function MemoryGame({ roomId, isHost: propIsHost, onLeave, onRoomCreated, player
   const [error, setError] = useState(null)
   const [notification, setNotification] = useState(null)
   const [matchAnimation, setMatchAnimation] = useState(null) // {card1, card2} indices
+  const [difficultyLevel, setDifficultyLevel] = useState(0) // 0-3, increases after each game completion
   
   const socketRef = useRef(null)
   const gameStateRef = useRef('waiting')
@@ -179,14 +205,28 @@ function MemoryGame({ roomId, isHost: propIsHost, onLeave, onRoomCreated, player
     }
   }, [roomId, isHost, currentProfile?.id])
 
+  // Calculate card pairs based on difficulty level
+  const getCardPairsCount = useCallback(() => {
+    // Level 0: 8 pairs (4x4 grid)
+    // Level 1: 10 pairs (4x5 grid, but we'll use 4x4 with some cards removed or adjust)
+    // Level 2: 12 pairs (4x6 grid, but we'll use 4x4 with all cards)
+    // Level 3: 14 pairs (4x7 grid, but we'll use 4x4 with all cards)
+    // Actually, let's increase to 5x4, 6x4, etc. or keep 4x4 and use more pairs
+    // For simplicity, let's use: 8, 10, 12, 14 pairs (max 16 for 4x4 grid)
+    const pairsByLevel = [8, 10, 12, 14]
+    return pairsByLevel[Math.min(difficultyLevel, 3)]
+  }, [difficultyLevel])
+
   // Initialize game cards
   const initializeCards = useCallback(() => {
-    // Create pairs of symbols
-    const symbols = CARD_SYMBOLS.slice(0, CARD_PAIRS)
+    const cardPairsCount = getCardPairsCount()
+    // Create pairs of symbols with colors
+    const symbols = CARD_SYMBOLS.slice(0, cardPairsCount)
     const cardPairs = []
     symbols.forEach((symbol, index) => {
-      cardPairs.push({ id: index * 2, symbol, pairId: index })
-      cardPairs.push({ id: index * 2 + 1, symbol, pairId: index })
+      const color = SYMBOL_COLORS[index % SYMBOL_COLORS.length]
+      cardPairs.push({ id: index * 2, symbol, pairId: index, color })
+      cardPairs.push({ id: index * 2 + 1, symbol, pairId: index, color })
     })
     
     // Shuffle cards
@@ -201,7 +241,7 @@ function MemoryGame({ roomId, isHost: propIsHost, onLeave, onRoomCreated, player
     }))
     
     return newCards
-  }, [])
+  }, [getCardPairsCount])
 
   // Start game
   const startGame = useCallback(() => {
@@ -413,10 +453,10 @@ function MemoryGame({ roomId, isHost: propIsHost, onLeave, onRoomCreated, player
           clearCPUMemoryForPair(card1.symbol)
         }
         
-        // Clear match animation after a moment
+        // Clear match animation after animation completes
         setTimeout(() => {
           setMatchAnimation(null)
-        }, 800)
+        }, 1000)
         
         // Award points to current player
         const newScores = new Map(scoresRef.current)
@@ -438,6 +478,11 @@ function MemoryGame({ roomId, isHost: propIsHost, onLeave, onRoomCreated, player
           setGameState('gameover')
           gameStateRef.current = 'gameover'
           soundManager.playGameOver()
+          
+          // Increase difficulty level (up to 3)
+          if (difficultyLevel < 3) {
+            setDifficultyLevel(prev => Math.min(prev + 1, 3))
+          }
           
           // Determine winner (player with highest score)
           let maxScore = -1
@@ -526,7 +571,7 @@ function MemoryGame({ roomId, isHost: propIsHost, onLeave, onRoomCreated, player
               scores: Object.fromEntries(scoresRef.current)
             })
           }
-        }, 1000) // Wait 1 second before flipping back
+        }, 1200) // Wait 1.2 seconds before flipping back to show mismatch animation
       }
     }, 500) // Small delay to show both cards
     
@@ -586,6 +631,160 @@ function MemoryGame({ roomId, isHost: propIsHost, onLeave, onRoomCreated, player
     return { emoji: '⚪', color: '#FFFFFF', name: `Player ${playerIndex + 1}` }
   }
 
+  // Render geometric card symbol - distinct patterns for each type with colors
+  const renderCardSymbol = (symbolType, isMatched, color) => {
+    if (!symbolType) return null
+    
+    const baseOpacity = isMatched ? 0.3 : 0.85
+    const strokeOpacity = isMatched ? 0.4 : 0.95
+    const symbolColor = color || '#000000'
+    
+    const svgStyle = {
+      width: '70%',
+      height: '70%',
+      position: 'absolute',
+      top: '50%',
+      left: '50%',
+      transform: 'translate(-50%, -50%)'
+    }
+    
+    // Helper to convert hex to rgba
+    const hexToRgba = (hex, opacity) => {
+      const r = parseInt(hex.slice(1, 3), 16)
+      const g = parseInt(hex.slice(3, 5), 16)
+      const b = parseInt(hex.slice(5, 7), 16)
+      return `rgba(${r}, ${g}, ${b}, ${opacity})`
+    }
+    
+    switch (symbolType) {
+      case 'circle':
+        return (
+          <svg viewBox="0 0 100 100" style={svgStyle}>
+            <circle cx="50" cy="50" r="40" fill={hexToRgba(symbolColor, baseOpacity)} stroke={hexToRgba(symbolColor, strokeOpacity)} strokeWidth="2" />
+          </svg>
+        )
+      case 'square':
+        return (
+          <svg viewBox="0 0 100 100" style={svgStyle}>
+            <rect x="18" y="18" width="64" height="64" fill="none" stroke={hexToRgba(symbolColor, strokeOpacity)} strokeWidth="5" />
+          </svg>
+        )
+      case 'triangle':
+        return (
+          <svg viewBox="0 0 100 100" style={svgStyle}>
+            <polygon points="50,15 88,80 12,80" fill={hexToRgba(symbolColor, baseOpacity * 0.6)} stroke={hexToRgba(symbolColor, strokeOpacity)} strokeWidth="3" />
+            <line x1="50" y1="15" x2="50" y2="80" stroke={hexToRgba(symbolColor, strokeOpacity * 0.5)} strokeWidth="1.5" />
+            <line x1="31" y1="47.5" x2="69" y2="47.5" stroke={hexToRgba(symbolColor, strokeOpacity * 0.5)} strokeWidth="1.5" />
+          </svg>
+        )
+      case 'diamond':
+        return (
+          <svg viewBox="0 0 100 100" style={svgStyle}>
+            <polygon points="50,18 82,50 50,82 18,50" fill="none" stroke={hexToRgba(symbolColor, strokeOpacity)} strokeWidth="4" />
+            <circle cx="50" cy="50" r="4" fill={hexToRgba(symbolColor, strokeOpacity)} />
+            <circle cx="35" cy="35" r="2.5" fill={hexToRgba(symbolColor, strokeOpacity)} />
+            <circle cx="65" cy="35" r="2.5" fill={hexToRgba(symbolColor, strokeOpacity)} />
+            <circle cx="35" cy="65" r="2.5" fill={hexToRgba(symbolColor, strokeOpacity)} />
+            <circle cx="65" cy="65" r="2.5" fill={hexToRgba(symbolColor, strokeOpacity)} />
+          </svg>
+        )
+      case 'hexagon':
+        return (
+          <svg viewBox="0 0 100 100" style={svgStyle}>
+            <polygon points="50,12 88,25 88,65 50,88 12,65 12,25" fill={hexToRgba(symbolColor, baseOpacity)} stroke={hexToRgba(symbolColor, strokeOpacity)} strokeWidth="2" />
+          </svg>
+        )
+      case 'star':
+        return (
+          <svg viewBox="0 0 100 100" style={svgStyle}>
+            <path d="M50,10 L58,38 L88,38 L64,58 L72,88 L50,68 L28,88 L36,58 L12,38 L42,38 Z" fill={hexToRgba(symbolColor, baseOpacity * 0.7)} stroke={hexToRgba(symbolColor, strokeOpacity)} strokeWidth="2.5" />
+          </svg>
+        )
+      case 'cross':
+        return (
+          <svg viewBox="0 0 100 100" style={svgStyle}>
+            <rect x="40" y="15" width="20" height="70" fill={hexToRgba(symbolColor, baseOpacity)} />
+            <rect x="15" y="40" width="70" height="20" fill={hexToRgba(symbolColor, baseOpacity)} />
+          </svg>
+        )
+      case 'plus':
+        return (
+          <svg viewBox="0 0 100 100" style={svgStyle}>
+            <line x1="50" y1="20" x2="50" y2="80" stroke={hexToRgba(symbolColor, strokeOpacity)} strokeWidth="6" strokeLinecap="round" />
+            <line x1="20" y1="50" x2="80" y2="50" stroke={hexToRgba(symbolColor, strokeOpacity)} strokeWidth="6" strokeLinecap="round" />
+          </svg>
+        )
+      case 'wave':
+        return (
+          <svg viewBox="0 0 100 100" style={svgStyle}>
+            <path d="M8,50 Q28,30 48,50 T88,50" fill="none" stroke={hexToRgba(symbolColor, strokeOpacity)} strokeWidth="4.5" strokeLinecap="round" />
+          </svg>
+        )
+      case 'grid':
+        return (
+          <svg viewBox="0 0 100 100" style={svgStyle}>
+            <rect x="30" y="15" width="8" height="70" fill={hexToRgba(symbolColor, baseOpacity * 0.5)} stroke={hexToRgba(symbolColor, strokeOpacity)} strokeWidth="1" />
+            <rect x="62" y="15" width="8" height="70" fill={hexToRgba(symbolColor, baseOpacity * 0.5)} stroke={hexToRgba(symbolColor, strokeOpacity)} strokeWidth="1" />
+            <rect x="15" y="30" width="70" height="8" fill={hexToRgba(symbolColor, baseOpacity * 0.5)} stroke={hexToRgba(symbolColor, strokeOpacity)} strokeWidth="1" />
+            <rect x="15" y="62" width="70" height="8" fill={hexToRgba(symbolColor, baseOpacity * 0.5)} stroke={hexToRgba(symbolColor, strokeOpacity)} strokeWidth="1" />
+          </svg>
+        )
+      case 'dots':
+        return (
+          <svg viewBox="0 0 100 100" style={svgStyle}>
+            <circle cx="30" cy="30" r="6" fill={hexToRgba(symbolColor, baseOpacity)} />
+            <circle cx="50" cy="30" r="6" fill={hexToRgba(symbolColor, baseOpacity)} />
+            <circle cx="70" cy="30" r="6" fill={hexToRgba(symbolColor, baseOpacity)} />
+            <circle cx="30" cy="50" r="6" fill={hexToRgba(symbolColor, baseOpacity)} />
+            <circle cx="50" cy="50" r="6" fill={hexToRgba(symbolColor, baseOpacity)} />
+            <circle cx="70" cy="50" r="6" fill={hexToRgba(symbolColor, baseOpacity)} />
+            <circle cx="30" cy="70" r="6" fill={hexToRgba(symbolColor, baseOpacity)} />
+            <circle cx="50" cy="70" r="6" fill={hexToRgba(symbolColor, baseOpacity)} />
+            <circle cx="70" cy="70" r="6" fill={hexToRgba(symbolColor, baseOpacity)} />
+          </svg>
+        )
+      case 'lines':
+        return (
+          <svg viewBox="0 0 100 100" style={svgStyle}>
+            <rect x="15" y="22" width="70" height="6" fill={hexToRgba(symbolColor, baseOpacity)} />
+            <rect x="15" y="47" width="70" height="6" fill={hexToRgba(symbolColor, baseOpacity)} />
+            <rect x="15" y="72" width="70" height="6" fill={hexToRgba(symbolColor, baseOpacity)} />
+          </svg>
+        )
+      case 'spiral':
+        return (
+          <svg viewBox="0 0 100 100" style={svgStyle}>
+            <path d="M50,50 Q50,30 70,30 Q90,30 90,50 Q90,70 70,70 Q50,70 50,50" fill="none" stroke={hexToRgba(symbolColor, strokeOpacity)} strokeWidth="4" strokeLinecap="round" />
+          </svg>
+        )
+      case 'arrow':
+        return (
+          <svg viewBox="0 0 100 100" style={svgStyle}>
+            <rect x="18" y="45" width="47" height="10" fill={hexToRgba(symbolColor, baseOpacity)} />
+            <polygon points="55,35 65,50 55,65" fill={hexToRgba(symbolColor, baseOpacity)} stroke={hexToRgba(symbolColor, strokeOpacity)} strokeWidth="2" />
+          </svg>
+        )
+      case 'chevron':
+        return (
+          <svg viewBox="0 0 100 100" style={svgStyle}>
+            <path d="M20,50 L35,30 L35,50 L35,70 M60,30 L80,50 L60,70" fill="none" stroke={hexToRgba(symbolColor, strokeOpacity)} strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        )
+      case 'zigzag':
+        return (
+          <svg viewBox="0 0 100 100" style={svgStyle}>
+            <path d="M8,50 L28,30 L48,50 L68,30 L92,50" fill="none" stroke={hexToRgba(symbolColor, strokeOpacity)} strokeWidth="4.5" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        )
+      default:
+        return (
+          <svg viewBox="0 0 100 100" style={svgStyle}>
+            <circle cx="50" cy="50" r="40" fill={hexToRgba(symbolColor, baseOpacity)} stroke={hexToRgba(symbolColor, strokeOpacity)} strokeWidth="2" />
+          </svg>
+        )
+    }
+  }
+
   // Update parent component with score/turn info when it changes
   useEffect(() => {
     if (onScoreUpdate && gameState === 'playing') {
@@ -621,9 +820,40 @@ function MemoryGame({ roomId, isHost: propIsHost, onLeave, onRoomCreated, player
     }
   }, [scores, currentTurn, gameState, players, currentProfile?.id, onScoreUpdate])
 
+  // Calculate grid dimensions based on card count
+  const getGridDimensions = useCallback(() => {
+    const cardPairsCount = getCardPairsCount()
+    const totalCards = cardPairsCount * 2
+    
+    // Calculate optimal grid: try to keep it roughly square
+    let cols = CARD_COLS
+    let rows = CARD_ROWS
+    
+    if (totalCards <= 16) {
+      cols = 4
+      rows = 4
+    } else if (totalCards <= 20) {
+      cols = 5
+      rows = 4
+    } else if (totalCards <= 24) {
+      cols = 6
+      rows = 4
+    } else if (totalCards <= 28) {
+      cols = 7
+      rows = 4
+    } else {
+      cols = 8
+      rows = 4
+    }
+    
+    return { cols, rows, totalCards }
+  }, [getCardPairsCount])
+
+  const gridDimensions = getGridDimensions()
+  
   // Calculate card size
-  const cardWidth = (GAME_WIDTH - 20) / CARD_COLS - 10
-  const cardHeight = (GAME_HEIGHT - 100) / CARD_ROWS - 10
+  const cardWidth = (GAME_WIDTH - 20) / gridDimensions.cols - 10
+  const cardHeight = (GAME_HEIGHT - 100) / gridDimensions.rows - 10
 
   // Calculate responsive scale for mobile
   const [gameScale, setGameScale] = useState(1)
@@ -669,12 +899,12 @@ function MemoryGame({ roomId, isHost: propIsHost, onLeave, onRoomCreated, player
         <div 
           className="fixed z-30"
           style={{
-            left: `calc(50% - ${GAME_WIDTH / 2 + 5}px)`,
+            left: `calc(50% - ${GAME_WIDTH / 2 + 10}px)`,
             top: '50%',
             transform: 'translateY(-50%)',
             display: 'flex',
             flexDirection: 'column',
-            gap: '20px',
+            gap: '16px',
             alignItems: 'center'
           }}
         >
@@ -685,17 +915,30 @@ function MemoryGame({ roomId, isHost: propIsHost, onLeave, onRoomCreated, player
             return (
               <div 
                 key={player.userProfileId || idx}
-                className="flex flex-col items-center gap-1"
+                className="flex flex-col items-center gap-2 px-3 py-2 rounded-lg border backdrop-blur-sm"
                 style={{
-                  opacity: isCurrentPlayer ? 1 : 0.7
+                  opacity: isCurrentPlayer ? 1 : 0.6,
+                  backgroundColor: isCurrentPlayer ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.4)',
+                  borderColor: isCurrentPlayer ? 'rgba(255, 255, 255, 0.4)' : 'rgba(255, 255, 255, 0.15)',
+                  boxShadow: isCurrentPlayer 
+                    ? '0 4px 12px rgba(255, 255, 255, 0.1), inset 0 1px 1px rgba(255, 255, 255, 0.1)' 
+                    : '0 2px 8px rgba(0, 0, 0, 0.3)',
+                  transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                  transform: isCurrentPlayer ? 'scale(1.05)' : 'scale(1)'
                 }}
               >
-                <span className="text-lg">{style.emoji}</span>
+                <span className="text-xl" style={{
+                  filter: isCurrentPlayer ? 'drop-shadow(0 0 4px rgba(255, 255, 255, 0.4))' : 'none',
+                  transition: 'all 0.3s ease'
+                }}>{style.emoji}</span>
                 <span 
-                  className={isCurrentPlayer ? 'font-bold text-2xl sm:text-3xl' : 'text-2xl sm:text-3xl'} 
+                  className={isCurrentPlayer ? 'font-bold text-2xl sm:text-3xl' : 'font-semibold text-xl sm:text-2xl'} 
                   style={{ 
                     color: style.color,
-                    textShadow: '0 2px 8px rgba(0, 0, 0, 0.9)'
+                    textShadow: isCurrentPlayer 
+                      ? '0 2px 8px rgba(0, 0, 0, 0.9), 0 0 12px rgba(255, 255, 255, 0.2)' 
+                      : '0 2px 6px rgba(0, 0, 0, 0.8)',
+                    transition: 'all 0.3s ease'
                   }}
                 >
                   {playerScore}
@@ -757,14 +1000,14 @@ function MemoryGame({ roomId, isHost: propIsHost, onLeave, onRoomCreated, player
             width: GAME_WIDTH, 
             height: '100%',
             minHeight: GAME_HEIGHT,
-            borderColor: 'rgba(255, 255, 255, 0.4)',
-            boxShadow: '0 12px 40px rgba(0, 0, 0, 0.6), inset 0 1px 2px rgba(255, 255, 255, 0.15), 0 0 60px rgba(255, 255, 255, 0.05)',
+            borderColor: 'rgba(255, 255, 255, 0.35)',
+            boxShadow: '0 16px 48px rgba(0, 0, 0, 0.7), inset 0 1px 3px rgba(255, 255, 255, 0.12), 0 0 80px rgba(255, 255, 255, 0.03)',
             backgroundImage: `
-              radial-gradient(circle at 3px 3px, rgba(255, 255, 255, 0.06) 1.5px, transparent 0),
-              linear-gradient(to bottom, transparent 0%, rgba(255, 255, 255, 0.03) 50%, transparent 100%),
-              radial-gradient(ellipse at center top, rgba(255, 255, 255, 0.05) 0%, transparent 50%)
+              radial-gradient(circle at 4px 4px, rgba(255, 255, 255, 0.04) 1px, transparent 0),
+              linear-gradient(to bottom, transparent 0%, rgba(255, 255, 255, 0.02) 50%, transparent 100%),
+              radial-gradient(ellipse at center top, rgba(255, 255, 255, 0.03) 0%, transparent 60%)
             `,
-            backgroundSize: '50px 50px, 100% 100%, 100% 200px',
+            backgroundSize: '40px 40px, 100% 100%, 100% 180px',
             pointerEvents: 'auto',
             touchAction: 'manipulation'
           }}
@@ -772,28 +1015,41 @@ function MemoryGame({ roomId, isHost: propIsHost, onLeave, onRoomCreated, player
         {/* Turn Indicator - Shows during gameplay */}
         {gameState === 'playing' && currentTurn && (
           <div 
-            className="absolute top-2 left-1/2 transform -translate-x-1/2 z-30 px-4 py-2 rounded-lg border-2 backdrop-blur-md"
+            className="absolute top-3 left-1/2 transform -translate-x-1/2 z-30 px-5 py-2.5 rounded-xl border-2 backdrop-blur-md"
             style={{
-              backgroundColor: isMyTurn ? 'rgba(255, 255, 255, 0.2)' : 'rgba(0, 0, 0, 0.5)',
-              borderColor: isMyTurn ? 'rgba(255, 255, 255, 0.5)' : 'rgba(255, 255, 255, 0.3)',
+              backgroundColor: isMyTurn ? 'rgba(255, 255, 255, 0.15)' : 'rgba(0, 0, 0, 0.6)',
+              borderColor: isMyTurn ? 'rgba(255, 255, 255, 0.6)' : 'rgba(255, 255, 255, 0.25)',
               boxShadow: isMyTurn 
-                ? '0 4px 12px rgba(255, 255, 255, 0.2), inset 0 1px 1px rgba(255, 255, 255, 0.1)' 
-                : '0 2px 8px rgba(0, 0, 0, 0.3)',
-              transition: 'all 0.3s ease',
-              animation: isMyTurn ? 'pulseGlow 2s ease-in-out infinite' : 'none'
+                ? '0 6px 20px rgba(255, 255, 255, 0.15), inset 0 1px 2px rgba(255, 255, 255, 0.1)' 
+                : '0 3px 12px rgba(0, 0, 0, 0.4)',
+              transition: 'all 0.4s cubic-bezier(0.4, 0, 0.2, 1)',
+              animation: isMyTurn ? 'pulseGlow 2.5s ease-in-out infinite' : 'none',
+              transform: isMyTurn ? 'translateX(-50%) scale(1.05)' : 'translateX(-50%) scale(1)'
             }}
           >
-            <div className="flex items-center gap-2 text-sm font-semibold text-white">
+            <div className="flex items-center gap-3 text-sm font-semibold text-white">
               {(() => {
                 const currentPlayer = players.find(p => p.userProfileId === currentTurn)
                 const currentPlayerIndex = currentPlayer ? players.indexOf(currentPlayer) : -1
                 const style = currentPlayerIndex >= 0 ? getPlayerStyle(currentPlayerIndex) : { emoji: '⚪', color: '#FFFFFF', name: 'Player' }
                 return (
                   <>
-                    <span className="text-lg">{style.emoji}</span>
-                    <span style={{ color: style.color }}>
+                    <span className="text-xl" style={{ 
+                      filter: isMyTurn ? 'drop-shadow(0 0 4px rgba(255, 255, 255, 0.5))' : 'none',
+                      transition: 'all 0.3s ease'
+                    }}>{style.emoji}</span>
+                    <span style={{ 
+                      color: style.color,
+                      textShadow: isMyTurn ? '0 0 8px rgba(255, 255, 255, 0.3)' : 'none',
+                      transition: 'all 0.3s ease'
+                    }}>
                       {isMyTurn ? 'Your Turn' : `${currentPlayer?.name || 'Player'}'s Turn`}
                     </span>
+                    {difficultyLevel > 0 && (
+                      <span className="text-xs opacity-70 ml-2">
+                        Level {difficultyLevel + 1}
+                      </span>
+                    )}
                   </>
                 )
               })()}
@@ -805,8 +1061,8 @@ function MemoryGame({ roomId, isHost: propIsHost, onLeave, onRoomCreated, player
           <div 
             className="grid gap-2 p-4" 
             style={{ 
-              gridTemplateColumns: `repeat(${CARD_COLS}, 1fr)`,
-              gridTemplateRows: `repeat(${CARD_ROWS}, 1fr)`,
+              gridTemplateColumns: `repeat(${gridDimensions.cols}, 1fr)`,
+              gridTemplateRows: `repeat(${gridDimensions.rows}, 1fr)`,
               height: '100%',
               paddingTop: '60px',
               paddingBottom: '20px',
@@ -847,63 +1103,69 @@ function MemoryGame({ roomId, isHost: propIsHost, onLeave, onRoomCreated, player
               <div
                 key={card.id}
                 data-card-index={index}
-                className={`border-2 rounded-xl transition-all duration-300 flex items-center justify-center text-4xl ${
+                className={`border rounded-lg transition-all duration-300 flex items-center justify-center ${
                   isClickable ? 'hover:scale-105 cursor-pointer active:scale-95' : 'cursor-not-allowed'
-                } ${card.matched ? 'opacity-60' : ''} ${!isClickable && !isFlipped ? 'opacity-60' : ''}`}
+                } ${card.matched ? 'opacity-40' : ''} ${!isClickable && !isFlipped ? 'opacity-40' : ''}`}
                 style={{
                   width: cardWidth,
                   height: cardHeight,
                   backgroundColor: isFlipped 
                     ? (card.matched 
-                      ? 'rgba(255, 255, 255, 0.85)' 
-                      : 'rgba(255, 255, 255, 0.98)')
-                    : 'rgba(255, 255, 255, 0.12)',
+                      ? 'rgba(255, 255, 255, 0.95)' 
+                      : 'rgba(255, 255, 255, 1)')
+                    : 'rgba(255, 255, 255, 0.1)',
                   borderColor: isFlipped 
                     ? (card.matched 
-                      ? 'rgba(255, 255, 255, 0.4)' 
+                      ? 'rgba(0, 0, 0, 0.2)' 
                       : isSelected 
-                        ? 'rgba(255, 255, 255, 0.9)' 
-                        : 'rgba(255, 255, 255, 0.6)')
+                        ? 'rgba(0, 0, 0, 0.4)' 
+                        : 'rgba(0, 0, 0, 0.3)')
                     : isClickable 
-                      ? 'rgba(255, 255, 255, 0.4)' 
-                      : 'rgba(255, 255, 255, 0.2)',
-                  transform: `${isFlipped ? 'rotateY(0deg)' : 'rotateY(180deg)'} ${isMatchAnimating ? 'scale(1.15)' : isMismatchAnimating ? 'scale(0.95)' : 'scale(1)'}`,
+                      ? 'rgba(255, 255, 255, 0.3)' 
+                      : 'rgba(255, 255, 255, 0.15)',
+                  borderWidth: '1px',
+                  transform: `${isFlipped ? 'rotateY(0deg)' : 'rotateY(180deg)'} ${isMatchAnimating ? 'scale(1.15)' : isMismatchAnimating ? 'scale(0.92)' : 'scale(1)'}`,
                   transformStyle: 'preserve-3d',
                   perspective: '1000px',
                   backfaceVisibility: 'visible',
                   boxShadow: isFlipped 
                     ? (card.matched 
-                      ? '0 2px 8px rgba(255, 255, 255, 0.2), inset 0 1px 1px rgba(255, 255, 255, 0.1)' 
+                      ? '0 1px 3px rgba(0, 0, 0, 0.2), inset 0 0 0 1px rgba(0, 0, 0, 0.05)' 
                       : isSelected 
-                        ? '0 6px 20px rgba(255, 255, 255, 0.5), inset 0 1px 1px rgba(255, 255, 255, 0.3)' 
-                        : '0 4px 14px rgba(0, 0, 0, 0.3), inset 0 1px 1px rgba(255, 255, 255, 0.2)')
-                    : '0 3px 10px rgba(0, 0, 0, 0.3), inset 0 1px 1px rgba(255, 255, 255, 0.15)',
+                        ? '0 4px 12px rgba(0, 0, 0, 0.3), inset 0 0 0 1px rgba(0, 0, 0, 0.1)' 
+                        : '0 2px 6px rgba(0, 0, 0, 0.25), inset 0 0 0 1px rgba(0, 0, 0, 0.05)')
+                    : isClickable
+                      ? '0 2px 4px rgba(0, 0, 0, 0.2), inset 0 1px 2px rgba(255, 255, 255, 0.1)'
+                      : '0 1px 3px rgba(0, 0, 0, 0.2), inset 0 1px 1px rgba(255, 255, 255, 0.05)',
                   transition: 'transform 0.4s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.3s ease, border-color 0.3s ease, background-color 0.3s ease',
                   touchAction: 'manipulation',
                   pointerEvents: 'auto',
                   position: 'relative',
-                  zIndex: isMatchAnimating || isMismatchAnimating ? 200 : 100,
+                  zIndex: isMatchAnimating || isMismatchAnimating ? 200 : (isSelected ? 150 : 100),
                   WebkitTapHighlightColor: 'transparent',
                   userSelect: 'none',
-                  WebkitTransform: `${isFlipped ? 'rotateY(0deg)' : 'rotateY(180deg)'} ${isMatchAnimating ? 'scale(1.15)' : isMismatchAnimating ? 'scale(0.95)' : 'scale(1)'}`,
+                  WebkitTransform: `${isFlipped ? 'rotateY(0deg)' : 'rotateY(180deg)'} ${isMatchAnimating ? 'scale(1.15)' : isMismatchAnimating ? 'scale(0.92)' : 'scale(1)'}`,
                   willChange: 'transform',
-                  filter: isMatchAnimating ? 'brightness(1.3) drop-shadow(0 0 8px rgba(255, 255, 255, 0.6))' : isMismatchAnimating ? 'brightness(0.7)' : 'none'
+                  filter: isMatchAnimating ? 'brightness(1.1) drop-shadow(0 0 8px rgba(0, 0, 0, 0.3))' : isMismatchAnimating ? 'brightness(0.8) contrast(0.95)' : 'none'
                 }}
               >
                 {isFlipped && (
-                  <span 
+                  <div 
                     style={{ 
-                      color: card.matched ? 'rgba(0, 0, 0, 0.5)' : 'rgba(0, 0, 0, 0.95)',
                       transform: 'rotateY(0deg)',
-                      textShadow: card.matched ? '0 1px 2px rgba(0, 0, 0, 0.1)' : '0 2px 4px rgba(0, 0, 0, 0.15)',
                       pointerEvents: 'none',
-                      fontSize: '2.5rem',
+                      width: '100%',
+                      height: '100%',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
                       transition: 'all 0.3s ease',
-                      filter: isMatchAnimating ? 'drop-shadow(0 0 4px rgba(255, 255, 255, 0.8))' : 'none'
+                      filter: isMatchAnimating ? 'drop-shadow(0 0 4px rgba(255, 255, 255, 0.8))' : 'none',
+                      position: 'relative'
                     }}
                   >
-                    {card.symbol}
-                  </span>
+                    {renderCardSymbol(card.symbol, card.matched, card.color)}
+                  </div>
                 )}
                 {!isFlipped && (
                   <div 
@@ -912,44 +1174,23 @@ function MemoryGame({ roomId, isHost: propIsHost, onLeave, onRoomCreated, player
                       width: '100%',
                       height: '100%',
                       display: 'flex',
-                      flexDirection: 'column',
                       alignItems: 'center',
                       justifyContent: 'center',
                       backgroundImage: `
-                        repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.12) 0px, rgba(255, 255, 255, 0.12) 2px, transparent 2px, transparent 10px),
-                        repeating-linear-gradient(-45deg, rgba(255, 255, 255, 0.12) 0px, rgba(255, 255, 255, 0.12) 2px, transparent 2px, transparent 10px),
-                        radial-gradient(circle at center, rgba(255, 255, 255, 0.18) 0%, transparent 75%)
+                        repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.05) 0px, rgba(255, 255, 255, 0.05) 1px, transparent 1px, transparent 6px),
+                        repeating-linear-gradient(-45deg, rgba(255, 255, 255, 0.05) 0px, rgba(255, 255, 255, 0.05) 1px, transparent 1px, transparent 6px)
                       `,
-                      backgroundSize: '100% 100%, 100% 100%, 100% 100%',
+                      backgroundSize: '100% 100%, 100% 100%',
                       position: 'relative',
                       pointerEvents: 'none',
-                      borderRadius: '10px'
+                      borderRadius: '8px'
                     }}
                   >
-                    <div style={{
-                      width: '55%',
-                      height: '55%',
-                      border: '2px solid rgba(255, 255, 255, 0.4)',
-                      borderRadius: '10px',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      background: 'linear-gradient(135deg, rgba(255, 255, 255, 0.08) 0%, rgba(255, 255, 255, 0.02) 100%)',
-                      boxShadow: 'inset 0 2px 6px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(255, 255, 255, 0.1)',
-                      pointerEvents: 'none',
-                      transition: 'all 0.3s ease'
-                    }}>
-                      <span style={{ 
-                        color: 'rgba(255, 255, 255, 0.8)',
-                        fontSize: '2.8rem',
-                        fontWeight: 'bold',
-                        textShadow: '0 2px 6px rgba(0, 0, 0, 0.4), 0 0 8px rgba(255, 255, 255, 0.1)',
-                        pointerEvents: 'none',
-                        fontFamily: 'system-ui, -apple-system, sans-serif'
-                      }}>
-                        ?
-                      </span>
-                    </div>
+                    <svg width="40%" height="40%" viewBox="0 0 100 100" style={{ opacity: 0.4 }}>
+                      <rect x="20" y="20" width="60" height="60" fill="none" stroke="rgba(255, 255, 255, 0.6)" strokeWidth="2" strokeLinecap="round" />
+                      <line x1="30" y1="30" x2="70" y2="70" stroke="rgba(255, 255, 255, 0.6)" strokeWidth="2" strokeLinecap="round" />
+                      <line x1="70" y1="30" x2="30" y2="70" stroke="rgba(255, 255, 255, 0.6)" strokeWidth="2" strokeLinecap="round" />
+                    </svg>
                   </div>
                 )}
               </div>
@@ -984,24 +1225,26 @@ function MemoryGame({ roomId, isHost: propIsHost, onLeave, onRoomCreated, player
           <div 
             className="absolute inset-0 flex flex-col items-center justify-center backdrop-blur-md"
             style={{
-              backgroundColor: 'rgba(0, 0, 0, 0.85)',
+              backgroundColor: 'rgba(0, 0, 0, 0.88)',
               padding: '24px',
               zIndex: 20,
               pointerEvents: 'auto'
             }}
           >
-            <div className="text-center mb-8">
-              <h1 className="text-4xl sm:text-5xl font-bold mb-3 text-white tracking-wider" style={{
-                textShadow: '0 2px 8px rgba(255, 255, 255, 0.3), 0 0 20px rgba(255, 255, 255, 0.1)',
-                letterSpacing: '0.1em'
+            <div className="text-center mb-10">
+              <h1 className="text-5xl sm:text-6xl font-bold mb-4 text-white tracking-wider" style={{
+                textShadow: '0 4px 12px rgba(255, 255, 255, 0.2), 0 0 24px rgba(255, 255, 255, 0.08)',
+                letterSpacing: '0.15em',
+                fontWeight: 700
               }}>
                 MEMORY
               </h1>
-              <div className="w-24 h-1 mx-auto mb-4" style={{
-                background: 'linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.5), transparent)'
+              <div className="w-32 h-0.5 mx-auto mb-6" style={{
+                background: 'linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.4), rgba(255, 255, 255, 0.4), transparent)',
+                boxShadow: '0 0 8px rgba(255, 255, 255, 0.2)'
               }}></div>
-              <p className="text-lg sm:text-xl mb-2 text-white/90 font-medium">Match pairs of cards</p>
-              <p className="text-sm text-white/60 mb-6">
+              <p className="text-lg sm:text-xl mb-3 text-white/85 font-medium tracking-wide">Match pairs of cards</p>
+              <p className="text-sm text-white/50 mb-8 font-light">
                 {players.length > 1 ? `${players.length} players ready` : 'Waiting for players...'}
               </p>
             </div>
@@ -1009,13 +1252,16 @@ function MemoryGame({ roomId, isHost: propIsHost, onLeave, onRoomCreated, player
               <button
                 onClick={startGame}
                 disabled={players.length < 2}
-                className="px-6 py-3 text-base font-bold text-white border-2 rounded-xl hover:bg-white hover:text-black transition-all duration-300 cursor-pointer hover:scale-105 hover:shadow-xl hover:shadow-white/20 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 disabled:hover:bg-transparent disabled:hover:text-white"
+                className="px-8 py-4 text-base font-semibold text-white border-2 rounded-xl hover:bg-white hover:text-black transition-all duration-300 cursor-pointer hover:scale-105 hover:shadow-xl hover:shadow-white/25 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:scale-100 disabled:hover:bg-transparent disabled:hover:text-white"
                 style={{
-                  borderColor: 'rgba(255, 255, 255, 0.4)',
-                  backgroundColor: players.length >= 2 ? 'rgba(255, 255, 255, 0.15)' : 'rgba(255, 255, 255, 0.05)',
-                  backdropFilter: 'blur(12px)',
-                  boxShadow: '0 6px 20px rgba(0, 0, 0, 0.4), inset 0 1px 1px rgba(255, 255, 255, 0.2)',
-                  minWidth: '180px'
+                  borderColor: players.length >= 2 ? 'rgba(255, 255, 255, 0.5)' : 'rgba(255, 255, 255, 0.25)',
+                  backgroundColor: players.length >= 2 ? 'rgba(255, 255, 255, 0.12)' : 'rgba(255, 255, 255, 0.04)',
+                  backdropFilter: 'blur(16px)',
+                  boxShadow: players.length >= 2 
+                    ? '0 8px 24px rgba(0, 0, 0, 0.5), inset 0 1px 2px rgba(255, 255, 255, 0.15)' 
+                    : '0 4px 12px rgba(0, 0, 0, 0.3)',
+                  minWidth: '200px',
+                  letterSpacing: '0.05em'
                 }}
               >
                 {players.length < 2 ? 'Waiting for Player 2...' : 'Start Game'}
@@ -1023,11 +1269,11 @@ function MemoryGame({ roomId, isHost: propIsHost, onLeave, onRoomCreated, player
             )}
             {!isHost && (
               <div className="text-center">
-                <p className="text-sm text-white/70 mb-2">Waiting for host to start...</p>
-                <div className="flex justify-center gap-1">
-                  <div className="w-2 h-2 rounded-full bg-white/40 animate-pulse" style={{ animationDelay: '0s' }}></div>
-                  <div className="w-2 h-2 rounded-full bg-white/40 animate-pulse" style={{ animationDelay: '0.2s' }}></div>
-                  <div className="w-2 h-2 rounded-full bg-white/40 animate-pulse" style={{ animationDelay: '0.4s' }}></div>
+                <p className="text-sm text-white/60 mb-3 font-light">Waiting for host to start...</p>
+                <div className="flex justify-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-white/30 animate-pulse" style={{ animationDelay: '0s' }}></div>
+                  <div className="w-2 h-2 rounded-full bg-white/30 animate-pulse" style={{ animationDelay: '0.2s' }}></div>
+                  <div className="w-2 h-2 rounded-full bg-white/30 animate-pulse" style={{ animationDelay: '0.4s' }}></div>
                 </div>
               </div>
             )}
@@ -1039,23 +1285,35 @@ function MemoryGame({ roomId, isHost: propIsHost, onLeave, onRoomCreated, player
           <div 
             className="absolute inset-0 flex flex-col items-center justify-center backdrop-blur-md z-40 animate-fade-in"
             style={{
-              backgroundColor: 'rgba(0, 0, 0, 0.92)',
+              backgroundColor: 'rgba(0, 0, 0, 0.94)',
               pointerEvents: 'auto'
             }}
           >
-            <div className="text-center mb-8">
-              <h2 className="text-4xl sm:text-5xl font-bold mb-3 text-white tracking-wider" style={{
-                textShadow: '0 2px 8px rgba(255, 255, 255, 0.3), 0 0 20px rgba(255, 255, 255, 0.1)',
-                letterSpacing: '0.1em'
+            <div className="text-center mb-10">
+              <h2 className="text-5xl sm:text-6xl font-bold mb-4 text-white tracking-wider" style={{
+                textShadow: '0 4px 12px rgba(255, 255, 255, 0.2), 0 0 24px rgba(255, 255, 255, 0.08)',
+                letterSpacing: '0.15em',
+                fontWeight: 700
               }}>
                 Game Over
               </h2>
-              <div className="w-24 h-1 mx-auto mb-6" style={{
-                background: 'linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.5), transparent)'
+              <div className="w-32 h-0.5 mx-auto mb-4" style={{
+                background: 'linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.4), rgba(255, 255, 255, 0.4), transparent)',
+                boxShadow: '0 0 8px rgba(255, 255, 255, 0.2)'
               }}></div>
+              {difficultyLevel < 3 && (
+                <p className="text-sm text-white/60 mb-2">
+                  Next game: Level {difficultyLevel + 2} ({[8, 10, 12, 14][difficultyLevel + 1]} pairs)
+                </p>
+              )}
+              {difficultyLevel >= 3 && (
+                <p className="text-sm text-white/60 mb-2">
+                  Maximum difficulty reached!
+                </p>
+              )}
             </div>
-            <div className="mb-8 w-full max-w-md">
-              <h3 className="text-lg sm:text-xl font-semibold mb-4 text-white/90 text-center">Final Scores</h3>
+            <div className="mb-10 w-full max-w-md">
+              <h3 className="text-lg sm:text-xl font-semibold mb-6 text-white/80 text-center tracking-wide">Final Scores</h3>
               <div className="space-y-3">
                 {Array.from(scores.entries())
                   .sort((a, b) => b[1] - a[1])
@@ -1067,22 +1325,36 @@ function MemoryGame({ roomId, isHost: propIsHost, onLeave, onRoomCreated, player
                     return (
                       <div 
                         key={userProfileId} 
-                        className="text-lg sm:text-xl mb-2 flex items-center justify-between px-4 py-3 rounded-lg border transition-all duration-300"
+                        className="text-lg sm:text-xl mb-2 flex items-center justify-between px-5 py-3.5 rounded-xl border-2 backdrop-blur-sm transition-all duration-300"
                         style={{
-                          backgroundColor: isWinner ? 'rgba(255, 255, 255, 0.1)' : 'rgba(255, 255, 255, 0.05)',
-                          borderColor: isWinner ? 'rgba(255, 255, 255, 0.4)' : 'rgba(255, 255, 255, 0.2)',
-                          boxShadow: isWinner ? '0 4px 12px rgba(255, 255, 255, 0.1)' : 'none',
-                          transform: isWinner ? 'scale(1.02)' : 'scale(1)',
-                          animation: isWinner ? 'fadeInUp 0.5s ease-out' : 'fadeInUp 0.5s ease-out',
-                          animationDelay: `${idx * 0.1}s`
+                          backgroundColor: isWinner ? 'rgba(255, 255, 255, 0.12)' : 'rgba(255, 255, 255, 0.04)',
+                          borderColor: isWinner ? 'rgba(255, 255, 255, 0.5)' : 'rgba(255, 255, 255, 0.2)',
+                          boxShadow: isWinner 
+                            ? '0 6px 16px rgba(255, 255, 255, 0.12), inset 0 1px 2px rgba(255, 255, 255, 0.1)' 
+                            : '0 2px 8px rgba(0, 0, 0, 0.3)',
+                          transform: isWinner ? 'scale(1.03)' : 'scale(1)',
+                          animation: 'fadeInUp 0.5s ease-out',
+                          animationDelay: `${idx * 0.08}s`,
+                          animationFillMode: 'both'
                         }}
                       >
                         <div className="flex items-center gap-3">
-                          <span className="text-2xl">{idx === 0 ? '🏆' : `${idx + 1}.`}</span>
-                          <span className="text-2xl">{style.emoji}</span>
-                          <span className="text-white font-medium">{player?.name || 'Player'}</span>
+                          <span className="text-xl font-bold" style={{ 
+                            color: isWinner ? 'rgba(255, 255, 255, 0.9)' : 'rgba(255, 255, 255, 0.5)',
+                            minWidth: '24px'
+                          }}>{idx === 0 ? '1' : `${idx + 1}`}</span>
+                          <span className="text-2xl" style={{
+                            filter: isWinner ? 'drop-shadow(0 0 4px rgba(255, 255, 255, 0.3))' : 'none'
+                          }}>{style.emoji}</span>
+                          <span className="text-white font-medium" style={{
+                            color: isWinner ? 'rgba(255, 255, 255, 0.95)' : 'rgba(255, 255, 255, 0.7)'
+                          }}>{player?.name || 'Player'}</span>
                         </div>
-                        <span className="text-white font-bold" style={{ color: style.color, fontSize: '1.3em' }}>
+                        <span className="text-white font-bold" style={{ 
+                          color: style.color, 
+                          fontSize: '1.4em',
+                          textShadow: isWinner ? '0 0 8px rgba(255, 255, 255, 0.3)' : 'none'
+                        }}>
                           {score}
                         </span>
                       </div>
@@ -1104,13 +1376,14 @@ function MemoryGame({ roomId, isHost: propIsHost, onLeave, onRoomCreated, player
                   setScores(new Map())
                   scoresRef.current = new Map()
                 }}
-                className="px-8 py-4 text-lg font-bold text-white border-2 rounded-xl hover:bg-white hover:text-black transition-all duration-300 cursor-pointer hover:scale-105 hover:shadow-xl hover:shadow-white/20"
+                className="px-8 py-4 text-lg font-semibold text-white border-2 rounded-xl hover:bg-white hover:text-black transition-all duration-300 cursor-pointer hover:scale-105 hover:shadow-xl hover:shadow-white/25"
                 style={{
-                  borderColor: 'rgba(255, 255, 255, 0.4)',
-                  backgroundColor: 'rgba(255, 255, 255, 0.15)',
-                  backdropFilter: 'blur(12px)',
-                  boxShadow: '0 6px 20px rgba(0, 0, 0, 0.4), inset 0 1px 1px rgba(255, 255, 255, 0.2)',
-                  minWidth: '180px'
+                  borderColor: 'rgba(255, 255, 255, 0.5)',
+                  backgroundColor: 'rgba(255, 255, 255, 0.12)',
+                  backdropFilter: 'blur(16px)',
+                  boxShadow: '0 8px 24px rgba(0, 0, 0, 0.5), inset 0 1px 2px rgba(255, 255, 255, 0.15)',
+                  minWidth: '200px',
+                  letterSpacing: '0.05em'
                 }}
               >
                 Play Again

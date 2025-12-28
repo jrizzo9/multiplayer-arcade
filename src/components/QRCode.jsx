@@ -7,6 +7,7 @@ import { useState } from 'react'
  * @param {number} size - Size of the QR code in pixels (default: 200)
  * @param {string} level - Error correction level: 'L', 'M', 'Q', 'H' (default: 'M')
  * @param {boolean} showUrl - Whether to display the URL below the QR code (default: false)
+ * @param {boolean} horizontal - Whether to use horizontal layout (default: false)
  * @param {string} className - Additional CSS classes
  */
 function QRCode({ 
@@ -14,6 +15,7 @@ function QRCode({
   size = 200, 
   level = 'M',
   showUrl = false,
+  horizontal = false,
   className = ''
 }) {
   const [copied, setCopied] = useState(false)
@@ -37,9 +39,9 @@ function QRCode({
   }
 
   return (
-    <div className={`flex flex-col items-center gap-3 ${className}`}>
+    <div className={`flex ${horizontal ? 'flex-col md:flex-row md:items-center' : 'flex-col items-center'} gap-3 ${className}`}>
       <div 
-        className="p-4 border rounded-xl relative overflow-hidden"
+        className="p-4 border rounded-xl relative overflow-hidden flex-shrink-0"
         style={{
           borderColor: 'rgba(255, 255, 255, 0.3)',
           backgroundColor: 'rgba(255, 255, 255, 0.05)',
@@ -66,9 +68,9 @@ function QRCode({
       </div>
       
       {showUrl && (
-        <div className="flex flex-col items-center gap-2 w-full max-w-xs">
+        <div className={`flex flex-col ${horizontal ? 'items-center md:items-start' : 'items-center'} gap-2 ${horizontal ? 'md:max-w-xs' : 'w-full max-w-xs'}`}>
           <p 
-            className="text-xs text-white/70 break-all text-center px-2 cursor-pointer hover:text-white transition-colors"
+            className={`text-xs text-white/70 break-all ${horizontal ? 'text-center md:text-left' : 'text-center'} px-2 cursor-pointer hover:text-white transition-colors`}
             onClick={handleCopy}
             title="Click to copy"
           >

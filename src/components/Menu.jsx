@@ -8,7 +8,6 @@ import { useRoom, useRoomConnection } from '../multiplayer/RoomProvider'
 import { setReady, selectGame } from '../multiplayer/roomLifecycle'
 import { isCPUProfile } from '../utils/cpuPlayer'
 import Button from './Button'
-import QRCode from './QRCode'
 
 // Helper function to get roomId from URL (single source of truth)
 function getRoomIdFromUrl() {
@@ -19,7 +18,6 @@ function getRoomIdFromUrl() {
 function Menu({ onSelectGame, currentProfile, onSwitchProfile, onLogout, roomState, onRoomStateChange }) {
   const [showRoomManager, setShowRoomManager] = useState(false)
   const [availableRooms, setAvailableRooms] = useState([])
-  const [connectionUrl, setConnectionUrl] = useState(null)
   const profileAnimal = currentProfile?.animal && currentProfile?.color
     ? { emoji: currentProfile.animal, color: currentProfile.color }
     : getProfileAnimal(0)
@@ -233,36 +231,6 @@ function Menu({ onSelectGame, currentProfile, onSwitchProfile, onLogout, roomSta
     )
   }
 
-  // Fetch connection info (network IP) when hostname is localhost
-  useEffect(() => {
-    const hostname = window.location.hostname
-    const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1'
-    
-    if (isLocalhost) {
-      // Fetch network IP from server - use same hostname as current page
-      const serverUrl = `http://${hostname}:8000`
-      
-      fetch(`${serverUrl}/api/connection-info`)
-        .then(res => res.json())
-        .then(data => {
-          if (data.url) {
-            // Extract just the hostname:port (remove http://)
-            const url = data.url.replace(/^https?:\/\//, '')
-            setConnectionUrl(url)
-          } else {
-            setConnectionUrl(window.location.host)
-          }
-        })
-        .catch(error => {
-          console.error('[Menu] Error fetching connection info:', error)
-          setConnectionUrl(window.location.host)
-        })
-    } else {
-      // Use current hostname (already the network IP or domain)
-      setConnectionUrl(window.location.host)
-    }
-  }, [])
-
   // Scroll to top when component mounts or when room state changes
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'smooth' })
@@ -293,33 +261,6 @@ function Menu({ onSelectGame, currentProfile, onSwitchProfile, onLogout, roomSta
             <br />
             <span className="inline-block animate-fade-in" style={{ animationDelay: '0.1s' }}>ARCADE</span>
           </h1>
-          {/* Connection URL Display with QR Code */}
-          {connectionUrl && (
-            <div 
-              className="mt-4 mb-4 px-4 py-3 border rounded-lg text-center animate-fade-in"
-              style={{
-                animationDelay: '0.2s',
-                borderColor: 'rgba(255, 255, 255, 0.3)',
-                backgroundColor: 'rgba(0, 0, 0, 0.4)',
-                backdropFilter: 'blur(12px)',
-                boxShadow: '0 4px 15px rgba(0, 0, 0, 0.3), inset 0 1px 1px rgba(255, 255, 255, 0.1)'
-              }}
-            >
-              <p className="text-xs text-white/60 uppercase tracking-wider mb-3">Join at</p>
-              <p className="text-base sm:text-lg font-mono font-bold text-white break-all px-2 mb-4">
-                {connectionUrl}
-              </p>
-              <div className="flex justify-center">
-                <QRCode
-                  url={`http://${connectionUrl}`}
-                  size={160}
-                  level="M"
-                  showUrl={false}
-                />
-              </div>
-              <p className="text-xs text-white/50 mt-3">Scan to join</p>
-            </div>
-          )}
           {!currentProfile && (
             <p className="text-white text-base sm:text-lg md:text-xl text-center mt-4 sm:mt-6 opacity-80 max-w-md px-medium animate-fade-in" style={{ animationDelay: '0.3s' }}>
               Select a profile to begin

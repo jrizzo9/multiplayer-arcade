@@ -80,6 +80,7 @@ function RoomManager({
   const [showRoomView, setShowRoomView] = useState(false) // Control whether to show individual room view
   const [showCloseRoomDialog, setShowCloseRoomDialog] = useState(false)
   const [connectionUrl, setConnectionUrl] = useState(null)
+  const [urlCopied, setUrlCopied] = useState(false)
 
   const socketRef = useRef(providerSocket)
   const previousSelectedGameRef = useRef(propSelectedGame)
@@ -1056,38 +1057,111 @@ function RoomManager({
           )}
 
           {/* QR Code Section - Share Room URL */}
-          {roomId && (
-            <div 
-              className="w-full p-small border rounded-xl relative overflow-hidden"
-              style={{
-                borderColor: 'rgba(255, 255, 255, 0.3)',
-                backgroundColor: 'rgba(255, 255, 255, 0.05)',
-                backdropFilter: 'blur(12px)',
-                boxShadow: '0 4px 15px rgba(0, 0, 0, 0.3), inset 0 1px 1px rgba(255, 255, 255, 0.1)'
-              }}
-            >
-              {/* Glass overlay */}
-              <div 
-                className="absolute inset-0 rounded-xl pointer-events-none"
-                style={{
-                  background: 'linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0) 50%)'
-                }}
-              />
+          {roomId && (() => {
+            const fullUrl = `http://${connectionUrl || window.location.host}${window.location.pathname}?room=${roomId}`
+            
+            const handleCopy = async () => {
+              try {
+                await navigator.clipboard.writeText(fullUrl)
+                setUrlCopied(true)
+                setTimeout(() => setUrlCopied(false), 2000)
+              } catch (error) {
+                console.error('Failed to copy URL:', error)
+              }
+            }
+            
+            const handleShare = async () => {
+              const shareData = {
+                title: 'Join Multiplayer Arcade Room',
+                text: `Join me in room ${roomId}!`,
+                url: fullUrl
+              }
               
-              <div className="flex flex-col items-center gap-4 relative z-10">
-                <h3 className="text-base font-bold">Share Room</h3>
-                <QRCode
-                  url={`http://${connectionUrl || window.location.host}${window.location.pathname}?room=${roomId}`}
-                  size={200}
-                  level="M"
-                  showUrl={true}
+              if (navigator.share && navigator.canShare && navigator.canShare(shareData)) {
+                try {
+                  await navigator.share(shareData)
+                } catch (error) {
+                  if (error.name !== 'AbortError') {
+                    console.error('Error sharing:', error)
+                    handleCopy()
+                  }
+                }
+              } else {
+                handleCopy()
+              }
+            }
+            
+            return (
+              <div 
+                className="w-full p-small border rounded-xl relative overflow-hidden"
+                style={{
+                  borderColor: 'rgba(255, 255, 255, 0.3)',
+                  backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                  backdropFilter: 'blur(12px)',
+                  boxShadow: '0 4px 15px rgba(0, 0, 0, 0.3), inset 0 1px 1px rgba(255, 255, 255, 0.1)'
+                }}
+              >
+                {/* Glass overlay */}
+                <div 
+                  className="absolute inset-0 rounded-xl pointer-events-none"
+                  style={{
+                    background: 'linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0) 50%)'
+                  }}
                 />
-                <p className="text-xs text-white/60 text-center">
-                  Scan to join this room
-                </p>
+                
+                <div className="flex flex-row items-center gap-4 md:gap-6 relative z-10">
+                  {/* Left side - QR Code */}
+                  <div className="flex-shrink-0">
+                    <QRCode
+                      url={fullUrl}
+                      size={160}
+                      level="M"
+                      showUrl={false}
+                    />
+                  </div>
+                  
+                  {/* Right side - Title, URL and sharing options */}
+                  <div className="flex flex-col items-start gap-3 flex-1 min-w-0">
+                    <div className="w-full">
+                      <h3 className="text-base font-bold mb-1 text-center md:text-left">Share Room</h3>
+                      <p 
+                        className="text-xs sm:text-sm font-mono font-bold text-white break-all px-2 mb-3 cursor-pointer hover:text-white/80 transition-colors"
+                        onClick={handleCopy}
+                        title="Click to copy"
+                      >
+                        {fullUrl}
+                      </p>
+                    </div>
+                    
+                    {/* Sharing Options */}
+                    <div className="flex flex-col sm:flex-row gap-2 w-full">
+                      <button
+                        onClick={handleCopy}
+                        className="flex-1 px-3 py-2 text-xs sm:text-sm border rounded-lg text-white border-white/30 hover:bg-white hover:text-black transition-all duration-200 cursor-pointer"
+                        style={{
+                          backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                          backdropFilter: 'blur(8px)'
+                        }}
+                      >
+                        {urlCopied ? '✓ Copied!' : 'Copy Link'}
+                      </button>
+                      
+                      <button
+                        onClick={handleShare}
+                        className="flex-1 px-3 py-2 text-xs sm:text-sm border rounded-lg text-white border-white/30 hover:bg-white hover:text-black transition-all duration-200 cursor-pointer"
+                        style={{
+                          backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                          backdropFilter: 'blur(8px)'
+                        }}
+                      >
+                        Share
+                      </button>
+                    </div>
+                  </div>
+                </div>
               </div>
-            </div>
-          )}
+            )
+          })()}
 
           <div className="w-full">
             <h3 className="text-lg font-bold mb-3">Players ({players.length}/4)</h3>

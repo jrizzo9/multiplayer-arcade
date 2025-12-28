@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { getApiUrl } from '../utils/apiUrl'
 
 const MAX_LOGS = 100
 const LOG_LEVELS = ['all', 'error', 'warn', 'info', 'debug']
@@ -63,7 +64,12 @@ function ErrorLogger() {
       })
       
       try {
-        const apiUrl = `http://${window.location.hostname}:8000`
+        const apiUrl = getApiUrl()
+        // Skip logging if API URL is not available (production without env var)
+        if (!apiUrl) {
+          return
+        }
+        
         const response = await fetch(`${apiUrl}/api/debug/client-logs`, {
           method: 'POST',
           headers: {

@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "logs": "node scripts/check-server-logs.js",
+    "logs:vercel": "node scripts/check-server-logs.js vercel",
+    "logs:render": "node scripts/check-server-logs.js render"
   },
   "dependencies": {
     "qrcode.react": "^4.2.0",

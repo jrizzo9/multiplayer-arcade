@@ -6,6 +6,7 @@ import { useRoom } from '../multiplayer/RoomProvider'
 import { emitPaddleMove, emitGameStart, emitGameState, subscribeToPongEvents } from '../games/pong/network'
 import soundManager from '../utils/sounds'
 import Notification from './Notification'
+import { getApiUrl } from '../utils/apiUrl'
 
 const GAME_WIDTH = 400
 const GAME_HEIGHT = 600
@@ -192,7 +193,8 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
     }
 
     try {
-      const serverUrl = `http://${window.location.hostname}:8000`
+      const serverUrl = getApiUrl()
+      if (!serverUrl) return // Skip if API URL not available (production without env var)
       await fetch(`${serverUrl}/api/debug/client-logs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -464,7 +466,8 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
                   setLoserUserProfileId(loserPlayer.userProfileId)
                   
                   // Record win in database
-                  const serverUrl = `http://${window.location.hostname}:8000`
+                  const serverUrl = getApiUrl()
+                  if (!serverUrl) return // Skip if API URL not available
                   fetch(`${serverUrl}/api/wins/record`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -483,7 +486,8 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
                   setLoserUserProfileId(loserPlayer.userProfileId)
                   
                   // Record win in database
-                  const serverUrl = `http://${window.location.hostname}:8000`
+                  const serverUrl = getApiUrl()
+                  if (!serverUrl) return // Skip if API URL not available
                   fetch(`${serverUrl}/api/wins/record`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -738,14 +742,14 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
       setTopPaddleX(clampedX)
       // Direct DOM update for smoother touch response
       if (topPaddleElementRef.current) {
-        topPaddleElementRef.current.style.transform = `translate3d(${clampedX}px, 0, 0)`
+        topPaddleElementRef.current.style.left = `${clampedX}px`
       }
     } else {
       bottomPaddleXRef.current = clampedX
       setBottomPaddleX(clampedX)
       // Direct DOM update for smoother touch response
       if (bottomPaddleElementRef.current) {
-        bottomPaddleElementRef.current.style.transform = `translate3d(${clampedX}px, 0, 0)`
+        bottomPaddleElementRef.current.style.left = `${clampedX}px`
       }
     }
     
@@ -797,14 +801,14 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
       setTopPaddleX(clampedX)
       // Direct DOM update for smoother mouse response
       if (topPaddleElementRef.current) {
-        topPaddleElementRef.current.style.transform = `translate3d(${clampedX}px, 0, 0)`
+        topPaddleElementRef.current.style.left = `${clampedX}px`
       }
     } else {
       bottomPaddleXRef.current = clampedX
       setBottomPaddleX(clampedX)
       // Direct DOM update for smoother mouse response
       if (bottomPaddleElementRef.current) {
-        bottomPaddleElementRef.current.style.transform = `translate3d(${clampedX}px, 0, 0)`
+        bottomPaddleElementRef.current.style.left = `${clampedX}px`
       }
     }
     
@@ -856,11 +860,18 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
 
       // Ball collision with top paddle
       let paddleHit = false
+      // Check collision with more lenient bounds
+      const ballCenterX = ballXRef.current + BALL_SIZE / 2
+      const paddleLeft = topPaddleXRef.current
+      const paddleRight = topPaddleXRef.current + PADDLE_WIDTH
+      const paddleTop = 0
+      const paddleBottom = PADDLE_HEIGHT
+      
       if (
-        ballYRef.current <= PADDLE_HEIGHT &&
-        ballYRef.current >= 0 &&
-        ballXRef.current + BALL_SIZE >= topPaddleXRef.current &&
-        ballXRef.current <= topPaddleXRef.current + PADDLE_WIDTH
+        ballYRef.current <= paddleBottom + 2 && // Allow 2px overlap tolerance
+        ballYRef.current + BALL_SIZE >= paddleTop - 2 &&
+        ballCenterX >= paddleLeft - BALL_SIZE / 2 &&
+        ballCenterX <= paddleRight + BALL_SIZE / 2
       ) {
         if (ballVelYRef.current < 0) {
           if (!lastPaddleHitRef.current) {
@@ -878,18 +889,24 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
             setTimeout(() => setPaddleRipple(prev => ({ ...prev, top: null })), 300)
           }
           ballVelYRef.current = -ballVelYRef.current
-          const hitPos = (ballXRef.current - topPaddleXRef.current) / PADDLE_WIDTH
+          const hitPos = (ballCenterX - paddleLeft) / PADDLE_WIDTH
           ballVelXRef.current = (hitPos - 0.5) * 6
-          ballYRef.current = PADDLE_HEIGHT
+          ballYRef.current = Math.max(PADDLE_HEIGHT, ballYRef.current)
         }
       }
 
       // Ball collision with bottom paddle
+      const ballCenterXBottom = ballXRef.current + BALL_SIZE / 2
+      const paddleLeftBottom = bottomPaddleXRef.current
+      const paddleRightBottom = bottomPaddleXRef.current + PADDLE_WIDTH
+      const paddleTopBottom = GAME_HEIGHT - PADDLE_HEIGHT
+      const paddleBottomBottom = GAME_HEIGHT
+      
       if (
-        ballYRef.current >= GAME_HEIGHT - PADDLE_HEIGHT - BALL_SIZE &&
-        ballYRef.current <= GAME_HEIGHT &&
-        ballXRef.current + BALL_SIZE >= bottomPaddleXRef.current &&
-        ballXRef.current <= bottomPaddleXRef.current + PADDLE_WIDTH
+        ballYRef.current <= paddleBottomBottom + 2 && // Allow 2px overlap tolerance
+        ballYRef.current + BALL_SIZE >= paddleTopBottom - 2 &&
+        ballCenterXBottom >= paddleLeftBottom - BALL_SIZE / 2 &&
+        ballCenterXBottom <= paddleRightBottom + BALL_SIZE / 2
       ) {
         if (ballVelYRef.current > 0) {
           if (!lastPaddleHitRef.current) {
@@ -907,9 +924,9 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
             setTimeout(() => setPaddleRipple(prev => ({ ...prev, bottom: null })), 300)
           }
           ballVelYRef.current = -ballVelYRef.current
-          const hitPos = (ballXRef.current - bottomPaddleXRef.current) / PADDLE_WIDTH
+          const hitPos = (ballCenterXBottom - paddleLeftBottom) / PADDLE_WIDTH
           ballVelXRef.current = (hitPos - 0.5) * 6
-          ballYRef.current = GAME_HEIGHT - PADDLE_HEIGHT - BALL_SIZE
+          ballYRef.current = Math.min(GAME_HEIGHT - PADDLE_HEIGHT - BALL_SIZE, ballYRef.current)
         }
       }
 
@@ -959,7 +976,8 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
             setLoserUserProfileId(loserPlayer.userProfileId)
             
             // Record win in database
-            const serverUrl = `http://${window.location.hostname}:8000`
+            const serverUrl = getApiUrl()
+            if (!serverUrl) return // Skip if API URL not available
             fetch(`${serverUrl}/api/wins/record`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -1047,7 +1065,8 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
             setLoserUserProfileId(loserPlayer.userProfileId)
             
             // Record win in database
-            const serverUrl = `http://${window.location.hostname}:8000`
+            const serverUrl = getApiUrl()
+            if (!serverUrl) return // Skip if API URL not available
             fetch(`${serverUrl}/api/wins/record`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -1120,7 +1139,7 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
       }
       if (bottomPaddleElementRef.current) {
         const myX = playerNumberRef.current === 1 ? topPaddleXRef.current : bottomPaddleXRef.current
-        bottomPaddleElementRef.current.style.transform = `translate3d(${myX}px, 0, 0)`
+        bottomPaddleElementRef.current.style.left = `${myX}px`
       }
 
       // Broadcast game state to other players (throttled to ~30 Hz for network efficiency)
@@ -1640,7 +1659,7 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
           {/* Main Paddle */}
           <div
             ref={topPaddleElementRef}
-            className="absolute border-2 rounded transition-all duration-75"
+            className="absolute border-2 rounded"
             style={{
               left: displayPaddles.opponentPaddleX,
               top: 0,
@@ -1649,13 +1668,12 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
               borderColor: shouldFlipView ? rightPlayerStyle.color : leftPlayerStyle.color,
               backgroundColor: shouldFlipView ? rightPlayerStyle.color : leftPlayerStyle.color,
               opacity: (shouldFlipView ? paddleHitFlash.bottom : paddleHitFlash.top) ? 1 : 0.8,
-              willChange: 'transform', // Optimize for frequent position updates
-              transform: 'translateZ(0)', // Force GPU acceleration
+              willChange: 'left', // Optimize for frequent position updates
               borderRadius: '8px',
               boxShadow: (shouldFlipView ? paddleHitFlash.bottom : paddleHitFlash.top)
                 ? `0 0 20px ${shouldFlipView ? rightPlayerStyle.color : leftPlayerStyle.color}, 0 0 40px ${shouldFlipView ? rightPlayerStyle.color : leftPlayerStyle.color}, inset 0 0 10px rgba(255, 255, 255, 0.2)`
                 : `0 0 8px ${shouldFlipView ? rightPlayerStyle.color : leftPlayerStyle.color}40, inset 0 0 5px rgba(255, 255, 255, 0.1)`,
-              transition: 'box-shadow 0.15s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.15s cubic-bezier(0.4, 0, 0.2, 1)'
+              transition: 'left 0s linear, box-shadow 0.15s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.15s cubic-bezier(0.4, 0, 0.2, 1)'
             }}
           >
             <div className="flex items-center justify-center h-full text-2xl">
@@ -1668,13 +1686,14 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
             <div
               className="absolute pointer-events-none"
               style={{
-                left: PADDLE_WIDTH / 2,
+                left: displayPaddles.opponentPaddleX + PADDLE_WIDTH / 2,
                 top: PADDLE_HEIGHT,
                 width: '1px',
                 height: '30px',
                 background: `linear-gradient(to bottom, ${shouldFlipView ? rightPlayerStyle.color : leftPlayerStyle.color}40, transparent)`,
                 transform: 'translateX(-50%)',
-                opacity: 0.3
+                opacity: 0.3,
+                transition: 'left 0s linear'
               }}
             />
           )}
@@ -1729,13 +1748,12 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
               borderColor: shouldFlipView ? leftPlayerStyle.color : rightPlayerStyle.color,
               backgroundColor: shouldFlipView ? leftPlayerStyle.color : rightPlayerStyle.color,
               opacity: (shouldFlipView ? paddleHitFlash.top : paddleHitFlash.bottom) ? 1 : 0.8,
-              willChange: 'transform', // Optimize for frequent position updates
-              transform: `translate3d(${displayPaddles.myPaddleX}px, 0, 0)`, // GPU accelerated
+              willChange: 'left', // Optimize for frequent position updates
               borderRadius: '8px',
               boxShadow: (shouldFlipView ? paddleHitFlash.top : paddleHitFlash.bottom)
                 ? `0 0 20px ${shouldFlipView ? leftPlayerStyle.color : rightPlayerStyle.color}, 0 0 40px ${shouldFlipView ? leftPlayerStyle.color : rightPlayerStyle.color}, inset 0 0 10px rgba(255, 255, 255, 0.2)`
                 : `0 0 8px ${shouldFlipView ? leftPlayerStyle.color : rightPlayerStyle.color}40, inset 0 0 5px rgba(255, 255, 255, 0.1)`,
-              transition: 'box-shadow 0.15s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.15s cubic-bezier(0.4, 0, 0.2, 1)'
+              transition: 'left 0s linear, box-shadow 0.15s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.15s cubic-bezier(0.4, 0, 0.2, 1)'
             }}
           >
             <div className="flex items-center justify-center h-full text-2xl">
@@ -1760,21 +1778,21 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
           )}
         </div>
 
-        {/* Enhanced Ball Shadow */}
-        {ballVisible && !ballExploding && (
+        {/* Enhanced Ball Shadow - Static when ball is not moving */}
+        {ballVisible && !ballExploding && (ballVelX !== 0 || ballVelY !== 0) && (
           <>
             <div
               className="absolute rounded-full"
               style={{
                 left: ballX + BALL_SIZE / 2,
                 top: getDisplayBallY() + BALL_SIZE + 2,
-                width: BALL_SIZE * (1 + ballSpeed * 0.1),
-                height: BALL_SIZE * 0.3 * (1 + ballSpeed * 0.1),
+                width: BALL_SIZE * 0.8,
+                height: BALL_SIZE * 0.3,
                 backgroundColor: 'rgba(0, 0, 0, 0.5)',
-                filter: `blur(${4 + ballSpeed * 0.5}px)`,
+                filter: 'blur(4px)',
                 transform: 'translateX(-50%)',
-                opacity: 0.6 + ballSpeed * 0.05,
-                transition: 'all 0.1s ease-out'
+                opacity: 0.6,
+                transition: 'left 0.05s linear, top 0.05s linear'
               }}
             />
             {/* Additional shadow layer for depth */}
@@ -1788,7 +1806,8 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
                 backgroundColor: 'rgba(0, 0, 0, 0.3)',
                 filter: 'blur(6px)',
                 transform: 'translateX(-50%)',
-                opacity: 0.4
+                opacity: 0.4,
+                transition: 'left 0.05s linear, top 0.05s linear'
               }}
             />
           </>
@@ -1868,46 +1887,50 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
             {/* Main Ball */}
             <div
               ref={ballElementRef}
-              className="absolute bg-white rounded-full"
+              className="absolute rounded-full"
               style={{
                 left: 0,
                 top: 0,
                 width: BALL_SIZE,
                 height: BALL_SIZE,
+                backgroundColor: '#FFFFFF',
+                border: '2px solid rgba(255, 255, 255, 0.9)',
                 boxShadow: ballHitFlash
-                  ? '0 0 20px rgba(255, 255, 255, 0.8), 0 0 40px rgba(255, 255, 255, 0.4), inset 0 0 10px rgba(255, 255, 255, 0.3)'
-                  : `0 0 ${10 + ballSpeed * 0.5}px rgba(255, 255, 255, ${0.5 + ballSpeed * 0.05}), inset 0 0 5px rgba(255, 255, 255, 0.2)`,
+                  ? '0 0 25px rgba(255, 255, 255, 1), 0 0 50px rgba(255, 255, 255, 0.6), 0 0 75px rgba(255, 255, 255, 0.3), inset 0 0 15px rgba(255, 255, 255, 0.4)'
+                  : `0 0 ${15 + ballSpeed * 0.5}px rgba(255, 255, 255, ${0.8 + ballSpeed * 0.05}), 0 0 ${30 + ballSpeed}px rgba(255, 255, 255, ${0.4 + ballSpeed * 0.02}), inset 0 0 8px rgba(255, 255, 255, 0.3)`,
                 transform: `translate3d(${ballX}px, ${getDisplayBallY()}px, 0) ${ballHitFlash ? 'scale(1.2)' : 'scale(1)'} rotate(${ballSpeed * 2}deg)`,
                 transition: ballHitFlash ? 'transform 0.1s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.1s cubic-bezier(0.4, 0, 0.2, 1)' : 'box-shadow 0.1s cubic-bezier(0.4, 0, 0.2, 1)',
                 animation: isResetting && ballVisible ? 'ballReappear 0.6s cubic-bezier(0.34, 1.56, 0.64, 1)' : 'ballRotation 2s linear infinite',
                 willChange: 'transform', // GPU acceleration
                 backfaceVisibility: 'hidden', // Prevent flickering on mobile
                 WebkitBackfaceVisibility: 'hidden',
-                zIndex: 2
+                zIndex: 2,
+                filter: 'brightness(1.2)'
               }}
             />
           </>
         )}
         
-        {/* Enhanced Ball Trail Effect with Motion Blur */}
-        {gameState === 'playing' && (ballVelX !== 0 || ballVelY !== 0) && ballVisible && (
+        {/* Enhanced Ball Trail Effect with Motion Blur - Only show when ball is moving */}
+        {gameState === 'playing' && (ballVelX !== 0 || ballVelY !== 0) && ballVisible && !isResetting && (
           <>
             {[...Array(3)].map((_, i) => {
               const trailOffset = (i + 1) * 0.2
               const trailOpacity = 0.3 - (i * 0.1)
               const trailSize = BALL_SIZE * (0.6 - i * 0.1)
+              const trailX = ballX - ballVelX * trailOffset
+              const trailY = getDisplayBallY() - (shouldFlipView ? ballVelY : -ballVelY) * trailOffset
               return (
                 <div
                   key={i}
                   className="absolute bg-white rounded-full pointer-events-none"
                   style={{
-                    left: ballX - ballVelX * trailOffset,
-                    top: getDisplayBallY() - (shouldFlipView ? ballVelY : -ballVelY) * trailOffset,
+                    left: trailX,
+                    top: trailY,
                     width: trailSize,
                     height: trailSize,
                     opacity: trailOpacity,
                     filter: `blur(${2 + i}px)`,
-                    transition: 'opacity 0.1s cubic-bezier(0.4, 0, 0.2, 1)',
                     zIndex: 1
                   }}
                 />

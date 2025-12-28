@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { io } from 'socket.io-client'
+import { getApiUrl } from '../utils/apiUrl'
 
 export default function SocketTest() {
   const [status, setStatus] = useState('disconnected')
@@ -22,7 +23,8 @@ export default function SocketTest() {
     }
 
     try {
-      const serverUrl = `http://${window.location.hostname}:8000`
+      const serverUrl = getApiUrl()
+      if (!serverUrl) return // Skip if API URL not available
       const response = await fetch(`${serverUrl}/api/debug/client-logs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -67,7 +69,7 @@ export default function SocketTest() {
       socketRef.current = null
     }
 
-    const serverUrl = `http://${window.location.hostname}:8000`
+    const serverUrl = getApiUrl() || `http://${window.location.hostname}:8000`
     addLog(`Connecting to ${serverUrl}...`)
     setStatus('connecting')
 

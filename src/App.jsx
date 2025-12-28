@@ -10,6 +10,7 @@ import ProfileSelector from './components/ProfileSelector'
 import ErrorLogger from './components/ErrorLogger'
 import SocketTest from './components/SocketTest'
 import AppHUD from './components/AppHUD'
+import ServerStatus from './components/ServerStatus'
 import PlayerProfile from './components/PlayerProfile'
 import GameHUB from './components/GameHUB'
 import { RoomProvider, useRoomConnection, useRoom } from './multiplayer/RoomProvider'
@@ -1014,6 +1015,7 @@ function App() {
           onLogout={handleLogout}
         />
         <ErrorLogger />
+        <ServerStatus />
         
         {/* Opt-in join prompt when room ID is in URL but user hasn't joined */}
         <OptInRoomJoin
@@ -1152,6 +1154,62 @@ function App() {
             profile={selectedProfile}
           />
         )
+      ) : roomState?.showRoomManager === true ? (
+        // User explicitly requested to show room manager (clicked RoomHUD)
+        // Show RoomManager even if not in a room - it will show create/join screen
+        (() => {
+          const selectedGameProp = roomState?.selectedGame || currentGame
+          // Get roomId from URL as fallback if multiplayerMode.roomId is not available
+          const urlRoomId = getRoomIdFromUrl()
+          const actualRoomId = (multiplayerMode && typeof multiplayerMode === 'object' && !multiplayerMode.gameType) 
+            ? (multiplayerMode.roomId || urlRoomId || roomState?.roomId)
+            : (urlRoomId || roomState?.roomId)
+          const actualProfile = (multiplayerMode && typeof multiplayerMode === 'object' && !multiplayerMode.gameType)
+            ? (multiplayerMode.profile || selectedProfile)
+            : selectedProfile
+          const actualIsHost = (multiplayerMode && typeof multiplayerMode === 'object' && !multiplayerMode.gameType)
+            ? (multiplayerMode.isHost || roomState?.isHost || false)
+            : (roomState?.isHost || false)
+          
+          console.log('[App] Rendering RoomManager (showRoomManager=true):', {
+            roomId: actualRoomId,
+            multiplayerModeRoomId: multiplayerMode?.roomId,
+            urlRoomId,
+            isHost: actualIsHost,
+            selectedGameProp,
+            hasProfile: !!actualProfile
+          })
+          
+          if (!actualProfile) {
+            // No profile selected - show Menu instead
+            return (
+              <Menu
+                onSelectGame={handleSelectGame}
+                currentProfile={selectedProfile}
+                onSwitchProfile={handleSwitchProfile}
+                onLogout={handleLogout}
+                roomState={roomState}
+                onRoomStateChange={handleRoomStateChange}
+              />
+            )
+          }
+          
+          return (
+            <RoomManager 
+              onJoinRoom={handleJoinRoom} 
+              onCreateRoom={handleCreateRoom}
+              onExit={handleLeaveRoom}
+              onBackToTitle={handleBackToTitle}
+              profile={actualProfile}
+              roomId={actualRoomId}
+              isHost={actualIsHost}
+              onRoomCreated={handleRoomCreated}
+              onRoomStateChange={handleRoomStateChange}
+              roomPlayers={roomState?.players}
+              selectedGame={selectedGameProp}
+            />
+          )
+        })()
       ) : multiplayerMode && typeof multiplayerMode === 'object' && !multiplayerMode.gameType ? (
         // Check if we have a roomId in URL - if not, player has left, show Menu
         !getRoomIdFromUrl() ? (
@@ -1202,8 +1260,13 @@ function App() {
         ) : (
           (() => {
             const selectedGameProp = roomState?.selectedGame || currentGame
+            // Get roomId from URL as fallback if multiplayerMode.roomId is not available
+            const urlRoomId = getRoomIdFromUrl()
+            const actualRoomId = multiplayerMode.roomId || urlRoomId || roomState?.roomId
             console.log('[App] Rendering RoomManager (multiplayerMode):', {
-              roomId: multiplayerMode.roomId,
+              roomId: actualRoomId,
+              multiplayerModeRoomId: multiplayerMode.roomId,
+              urlRoomId,
               isHost: multiplayerMode.isHost,
               selectedGameProp,
               roomStateSelectedGame: roomState?.selectedGame,
@@ -1215,9 +1278,9 @@ function App() {
                 onCreateRoom={handleCreateRoom}
                 onExit={handleLeaveRoom}
                 onBackToTitle={handleBackToTitle}
-                profile={multiplayerMode.profile}
-                roomId={multiplayerMode.roomId}
-                isHost={multiplayerMode.isHost}
+                profile={multiplayerMode.profile || selectedProfile}
+                roomId={actualRoomId}
+                isHost={multiplayerMode.isHost || roomState?.isHost || false}
                 onRoomCreated={handleRoomCreated}
                 onRoomStateChange={handleRoomStateChange}
                 roomPlayers={roomState?.players}
