@@ -20,7 +20,7 @@ export function getApiUrl() {
   }
   
   // In production (Vercel), use Render server URL
-  // In development, use localhost
+  // In development, default to Render server (can override with VITE_SERVER_URL for localhost)
   const hostname = window.location.hostname
   const isProduction = hostname.includes('vercel.app') || hostname.includes('onrender.com')
   
@@ -29,9 +29,9 @@ export function getApiUrl() {
     return 'https://multiplayer-arcade-server.onrender.com'
   }
   
-  // Development: use localhost with same protocol
-  const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:'
-  return `${protocol}//${hostname}:8000`
+  // Development: default to Render server (external)
+  // To use localhost instead, set VITE_SERVER_URL=http://localhost:8000 in .env
+  return 'https://multiplayer-arcade-server.onrender.com'
 }
 
 /**

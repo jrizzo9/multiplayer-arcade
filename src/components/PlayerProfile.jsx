@@ -1,15 +1,7 @@
 import { useState, useEffect } from 'react'
 import { clearCurrentProfile } from '../utils/profiles'
+import { getProfile } from '../services/db'
 import soundManager from '../utils/sounds'
-
-const getApiUrl = () => {
-  if (import.meta.env.VITE_API_URL) {
-    return import.meta.env.VITE_API_URL
-  }
-  // Always use the same protocol as the current page to avoid mixed content errors
-  const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:'
-  return `${protocol}//${window.location.hostname}:8000`
-}
 
 function PlayerProfile({ player, isCurrentPlayer, onClose, onLogout }) {
   const [profileData, setProfileData] = useState(null)
@@ -26,25 +18,56 @@ function PlayerProfile({ player, isCurrentPlayer, onClose, onLogout }) {
       try {
         setLoading(true)
         setError(null)
-        const apiUrl = `${getApiUrl()}/api/user-profiles/${player.userProfileId}`
-        console.log('Fetching profile data from:', apiUrl)
         
-        const response = await fetch(apiUrl)
-        
-        if (!response.ok) {
-          const errorText = await response.text()
-          console.error('API Error Response:', response.status, errorText)
-          throw new Error(`Failed to fetch profile data: ${response.status} ${response.statusText}`)
+        if (!player?.userProfileId) {
+          throw new Error('No userProfileId provided')
         }
         
-        const data = await response.json()
-        console.log('Profile data received:', data)
-        setProfileData(data)
+        console.log('[PlayerProfile] Fetching profile data from NoCodeBackend for profile ID:', player.userProfileId)
+        console.log('[PlayerProfile] Player object:', player)
+        
+        // Fetch profile from NoCodeBackend
+        const profile = await getProfile(player.userProfileId)
+        
+        if (!profile) {
+          // Try to use player data as fallback if profile not found
+          console.warn('[PlayerProfile] Profile not found in NoCodeBackend, using player data as fallback')
+          const fallbackData = {
+            id: player.userProfileId,
+            name: player.name || 'Unknown Player',
+            color: player.color || '#FFFFFF',
+            emoji: player.emoji || '⚪',
+            color_name: player.color || 'Custom',
+            created_at: null,
+            last_seen: null,
+            stats: null
+          }
+          setProfileData(fallbackData)
+          setError(null)
+          return
+        }
+        
+        console.log('[PlayerProfile] Profile data received from NoCodeBackend:', profile)
+        
+        // Transform NoCodeBackend profile to match expected format
+        const transformedData = {
+          id: profile.id,
+          name: profile.name,
+          color: profile.color || '#FFFFFF',
+          emoji: profile.emoji || '⚪',
+          color_name: profile.color || 'Custom',
+          created_at: profile.createdAt || profile.created_at,
+          last_seen: profile.lastSeen || profile.last_seen,
+          // Stats would need to be fetched separately if needed
+          stats: null
+        }
+        
+        setProfileData(transformedData)
         setError(null)
       } catch (err) {
-        console.error('Error fetching profile data:', err)
-        console.error('Profile ID:', player.userProfileId)
-        console.error('Player object:', player)
+        console.error('[PlayerProfile] Error fetching profile data from NoCodeBackend:', err)
+        console.error('[PlayerProfile] Profile ID:', player.userProfileId)
+        console.error('[PlayerProfile] Player object:', player)
         setError(err.message || 'Failed to fetch profile data. Please check the browser console for details.')
       } finally {
         setLoading(false)

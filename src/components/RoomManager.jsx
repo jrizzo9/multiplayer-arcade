@@ -65,12 +65,25 @@ function RoomManager({
     activeRoomId: providerRoomId,
     socketConnected,
     isJoining,
+    connectionError,
     connectToRoom,
     createNewRoom,
     disconnectFromRoom,
     keepConnectionAlive,
     socket: providerSocket
   } = connectionState
+
+  // Debug: Log profile and socket state
+  useEffect(() => {
+    console.log('[RoomManager] Profile and socket state:', {
+      hasProfile: !!profile,
+      profileId: profile?.id,
+      profileName: profile?.name,
+      profileEmoji: profile?.emoji,
+      socketConnected,
+      canCreateRoom: socketConnected && !!profile
+    })
+  }, [profile, socketConnected])
 
   // Local UI state (not room state)
   const [error, setError] = useState(null)
@@ -469,11 +482,14 @@ function RoomManager({
       fetch(`${serverUrl}/api/connection-info`)
         .then(res => res.json())
         .then(data => {
-          if (data.url) {
-            // Extract just the hostname:port (remove http://)
-            const url = data.url.replace(/^https?:\/\//, '')
-            setConnectionUrl(url)
+          // Only use 192.168.x.x addresses for localhost
+          // Otherwise use domain name
+          if (data.hostname && /^192\.168\./.test(data.hostname)) {
+            // Combine 192.168.x.x IP with the actual frontend port
+            const frontendPort = window.location.port || (window.location.protocol === 'https:' ? '443' : '80')
+            setConnectionUrl(`${data.hostname}${frontendPort ? ':' + frontendPort : ''}`)
           } else {
+            // Use domain name (not localhost)
             setConnectionUrl(window.location.host)
           }
         })
@@ -565,10 +581,19 @@ function RoomManager({
   }
 
   const handleCreateRoom = async () => {
+    console.log('[RoomManager] handleCreateRoom called', {
+      socketConnected,
+      hasProfile: !!profile,
+      profileId: profile?.id,
+      profileName: profile?.name,
+      profileEmoji: profile?.emoji
+    })
+    
     if (!socketConnected || !profile) {
       console.warn('[RoomManager] Cannot create room: socket not connected or no profile', {
         socketConnected,
-        hasProfile: !!profile
+        hasProfile: !!profile,
+        profile: profile
       })
       setError('Socket not connected or no profile selected')
       return
@@ -748,8 +773,20 @@ function RoomManager({
   if (!socketConnected && !socketRef.current) {
     return (
       <div className="w-full h-screen bg-black flex items-center justify-center text-white pt-large">
-        <div className="text-center">
-          <p>Connecting to server...</p>
+        <div className="text-center max-w-md px-4">
+          <p className="text-xl mb-4">Connecting to server...</p>
+          {connectionError && (
+            <div className="mt-4 p-4 bg-red-900/30 border border-red-500 rounded-lg">
+              <p className="text-red-400 text-sm mb-2">Connection Error:</p>
+              <p className="text-red-300 text-xs">{connectionError}</p>
+              <button
+                onClick={() => window.location.reload()}
+                className="mt-4 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
+              >
+                Refresh Page
+              </button>
+            </div>
+          )}
         </div>
       </div>
     )
@@ -863,15 +900,61 @@ function RoomManager({
             </div>
           )}
           
+          {/* Connection Status Indicator */}
+          <div className="w-full max-w-md mb-2">
+            {!socketConnected ? (
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center gap-2 px-4 py-2 rounded-lg border" style={{
+                  borderColor: connectionError ? 'rgba(239, 68, 68, 0.5)' : 'rgba(234, 179, 8, 0.5)',
+                  backgroundColor: connectionError ? 'rgba(239, 68, 68, 0.1)' : 'rgba(234, 179, 8, 0.1)',
+                  backdropFilter: 'blur(12px)'
+                }}>
+                  <div className={`w-2 h-2 rounded-full ${connectionError ? 'bg-red-400' : 'bg-yellow-400 animate-pulse'}`}></div>
+                  <p className={`text-xs sm:text-sm font-medium ${connectionError ? 'text-red-300' : 'text-yellow-300'}`}>
+                    {connectionError ? 'Connection Failed' : 'Connecting to server...'}
+                  </p>
+                </div>
+                {connectionError && (
+                  <div className="px-4 py-2 rounded-lg border border-red-500/50 bg-red-900/20">
+                    <p className="text-xs text-red-300">{connectionError}</p>
+                    <button
+                      onClick={() => window.location.reload()}
+                      className="mt-2 px-3 py-1 bg-red-600 hover:bg-red-700 text-white text-xs rounded transition-colors"
+                    >
+                      Refresh Page
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 px-4 py-2 rounded-lg border" style={{
+                borderColor: 'rgba(34, 197, 94, 0.5)',
+                backgroundColor: 'rgba(34, 197, 94, 0.1)',
+                backdropFilter: 'blur(12px)'
+              }}>
+                <div className="w-2 h-2 bg-green-400 rounded-full"></div>
+                <p className="text-xs sm:text-sm text-green-300 font-medium">
+                  Connected to server
+                </p>
+              </div>
+            )}
+          </div>
+
           <Button
             onClick={handleCreateRoom}
             variant="secondary"
             size="large"
             className="w-full max-w-md"
-            disabled={!socketConnected}
+            disabled={!socketConnected || !profile || isJoining}
           >
-            Create Room
+            {isJoining ? 'Creating Room...' : 'Create Room'}
           </Button>
+          {socketConnected && !profile && (
+            <p className="text-xs text-red-400 text-center max-w-md mt-2">Please select a profile first</p>
+          )}
+          {socketConnected && profile && isJoining && (
+            <p className="text-xs text-white/60 text-center max-w-md mt-2">Creating room, please wait...</p>
+          )}
 
           <div className="w-full max-w-md">
             <div className="flex items-center justify-between mb-3">
@@ -1059,7 +1142,18 @@ function RoomManager({
 
           {/* QR Code Section - Share Room URL */}
           {roomId && (() => {
-            const fullUrl = `http://${connectionUrl || window.location.host}${window.location.pathname}?room=${roomId}`
+            // Only use 192.168.x.x IP for localhost, otherwise use domain name
+            const protocol = window.location.protocol
+            let host
+            if (connectionUrl && /^192\.168\./.test(connectionUrl.replace(/^https?:\/\//, '').split(':')[0])) {
+              // Use 192.168.x.x IP (for localhost development)
+              host = connectionUrl.replace(/^https?:\/\//, '')
+            } else {
+              // Use domain name (production or non-192.168 addresses)
+              host = window.location.host
+            }
+            // Construct the full URL with proper protocol
+            const fullUrl = `${protocol}//${host}${window.location.pathname}?room=${roomId}`
             
             const handleCopy = async () => {
               try {
@@ -1174,6 +1268,15 @@ function RoomManager({
                 const isPlayerHost = hostUserProfileId && player.userProfileId && 
                   String(player.userProfileId) === String(hostUserProfileId)
                 
+                // CRITICAL: For current player, always use profile emoji from NoCodeBackend as source of truth
+                // For other players, use emoji from room state (which should match their NoCodeBackend profile)
+                const playerEmoji = isCurrentPlayer && profile?.emoji
+                  ? profile.emoji  // Use profile emoji from NoCodeBackend for current player
+                  : player.emoji || '⚪'  // Use room state emoji for other players
+                const playerColor = isCurrentPlayer && profile?.color
+                  ? profile.color  // Use profile color from NoCodeBackend for current player
+                  : player.color || '#FFFFFF'  // Use room state color for other players
+                
                 return (
                   <div 
                     key={player.userProfileId || player.id} 
@@ -1195,9 +1298,23 @@ function RoomManager({
                     
                     <div className="flex items-center justify-between relative z-10">
                       <div className="flex items-center gap-2">
-                        <span className="text-lg">{player.emoji || '⚪'}</span>
+                        <div
+                          className="w-8 h-8 rounded-full border flex items-center justify-center text-base"
+                          style={{ 
+                            borderColor: playerColor,
+                            backgroundColor: `${playerColor}20`,
+                          }}
+                          title={player.name || 'Unknown Player'}
+                        >
+                          <span>{playerEmoji}</span>
+                        </div>
                         <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-semibold">{player.name || 'Unknown Player'}</span>
+                          <span 
+                            className="font-semibold"
+                            style={{ color: playerColor }}
+                          >
+                            {player.name || 'Unknown Player'}
+                          </span>
                           {isPlayerHost && (
                             <span className="text-xs px-2 py-0.5 text-black bg-white rounded-full font-bold">Host</span>
                           )}

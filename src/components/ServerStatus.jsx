@@ -3,7 +3,6 @@ import { startHealthMonitoring, stopHealthMonitoring, getLastHealthStatus, waitF
 
 export default function ServerStatus() {
   const [healthStatus, setHealthStatus] = useState(getLastHealthStatus())
-  const [isExpanded, setIsExpanded] = useState(false)
 
   useEffect(() => {
     // Start monitoring
@@ -103,21 +102,8 @@ export default function ServerStatus() {
   return (
     <div className="fixed bottom-4 right-4 z-50">
       <div className="bg-black/90 text-white rounded-lg shadow-lg border border-white/20 min-w-[280px] max-w-[400px]">
-        {/* Status Bar */}
-        <div
-          className={`flex items-center justify-between px-4 py-2 cursor-pointer ${getStatusColor()}`}
-          onClick={() => setIsExpanded(!isExpanded)}
-        >
-          <div className="flex items-center gap-2">
-            <span className="text-lg font-bold">{getStatusIcon()}</span>
-            <span className="text-sm font-medium">{getStatusText()}</span>
-          </div>
-          <span className="text-xs opacity-75">{isExpanded ? '▼' : '▲'}</span>
-        </div>
-
         {/* Expanded Details */}
-        {isExpanded && (
-          <div className="px-4 py-3 space-y-2 text-xs border-t border-white/10 max-h-[70vh] overflow-y-auto">
+        <div className="px-4 py-3 space-y-2 text-xs max-h-[70vh] overflow-y-auto">
             {/* Latency/Performance */}
             <div className="space-y-1 pb-2 border-b border-white/10">
               <div className="font-semibold text-xs mb-1 opacity-90">Performance</div>
@@ -264,7 +250,6 @@ export default function ServerStatus() {
               )}
             </div>
           </div>
-        )}
       </div>
     </div>
   )

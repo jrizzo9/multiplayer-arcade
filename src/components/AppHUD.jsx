@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useRoom, useRoomConnection } from '../multiplayer/RoomProvider'
 import { getCurrentProfile } from '../utils/profiles'
-import { getProfileAnimal } from '../utils/playerColors'
 import soundManager from '../utils/sounds'
 import ProfileOptionsMenu from './ProfileOptionsMenu'
 import Button from './Button'
@@ -92,9 +91,28 @@ function AppHUD({ onShowProfile, onSwitchProfile, onShowRoom, onLogout }) {
     })
   }, [activeRoomId, urlRoomId, roomId, hasValidRoom, players.length, snapshotVersion])
   
-  const profileAnimal = currentProfile?.animal && currentProfile?.color
-    ? { emoji: currentProfile.animal, color: currentProfile.color }
-    : getProfileAnimal(0)
+  // If current player is in the room, use their player data from room state (source of truth)
+  // Room state player data comes from NoCodeBackend via server snapshots
+  // Otherwise fall back to profile data from NoCodeBackend
+  const currentPlayerInRoom = currentProfile && hasValidRoom 
+    ? players.find(p => p.userProfileId && currentProfile.id && String(p.userProfileId) === String(currentProfile.id))
+    : null
+  
+  // Profile emoji/color: When in a room, use room state emoji/color (source of truth from server)
+  // This ensures consistency with room avatars which also use room state data
+  // Otherwise use currentProfile from NoCodeBackend (database is source of truth)
+  // Never use index-based fallbacks - always use database values
+  const profileAnimal = currentProfile
+    ? hasValidRoom && currentPlayerInRoom
+      ? { 
+          emoji: currentPlayerInRoom.emoji || '⚪', 
+          color: currentPlayerInRoom.color || '#FFFFFF' 
+        }
+      : { 
+          emoji: currentProfile.emoji || '⚪', 
+          color: currentProfile.color || '#FFFFFF' 
+        }
+    : { emoji: '⚪', color: '#FFFFFF' }
 
   return (
     <>
@@ -130,20 +148,32 @@ function AppHUD({ onShowProfile, onSwitchProfile, onShowRoom, onLogout }) {
                   {roomId}
                 </div>
                 <div className="flex items-center -space-x-2">
-                  {players.map((player, index) => (
-                    <div
-                      key={player.userProfileId || player.id || index}
-                      className="relative w-5 h-5 sm:w-6 sm:h-6 rounded-full border-2 flex items-center justify-center text-xs sm:text-sm"
-                      style={{ 
-                        borderColor: player.color || '#FFFFFF',
-                        backgroundColor: player.color || '#FFFFFF',
-                        zIndex: players.length - index
-                      }}
-                      title={player.name}
-                    >
-                      {player.emoji || '⚪'}
-                    </div>
-                  ))}
+                  {players.map((player, index) => {
+                    // CRITICAL: Always use room state emoji/color as source of truth when in a room
+                    // Room state data comes from NoCodeBackend via server snapshots
+                    // The server receives this data when players join and includes it in room-snapshot events
+                    // This ensures consistency across all UI elements
+                    const isCurrentPlayer = currentProfile && player.userProfileId && 
+                      String(player.userProfileId) === String(currentProfile.id)
+                    const playerEmoji = player.emoji || '⚪'
+                    const playerColor = player.color || '#FFFFFF'
+                    const playerName = player.name || 'Unknown Player'
+                    
+                    return (
+                      <div
+                        key={player.userProfileId || player.id || index}
+                        className="relative w-5 h-5 sm:w-6 sm:h-6 rounded-full border-2 flex items-center justify-center text-xs sm:text-sm"
+                        style={{ 
+                          borderColor: playerColor,
+                          backgroundColor: playerColor,
+                          zIndex: players.length - index
+                        }}
+                        title={playerName}
+                      >
+                        {playerEmoji}
+                      </div>
+                    )
+                  })}
                 </div>
                 <span className="text-[10px] sm:text-xs text-white/60">
                   {playerCount}/{maxPlayers}
@@ -204,7 +234,7 @@ function AppHUD({ onShowProfile, onSwitchProfile, onShowRoom, onLogout }) {
               className="border rounded-xl px-small py-small relative overflow-hidden backdrop-blur-xl cursor-pointer transition-all duration-300 hover:scale-105 hover:bg-white/10"
               style={{
                 backgroundColor: 'rgba(0, 0, 0, 0.4)',
-                borderColor: 'rgba(255, 255, 255, 0.3)',
+                borderColor: profileAnimal.color,
                 boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 1px rgba(255, 255, 255, 0.2)'
               }}
               onClick={() => {

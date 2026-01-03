@@ -3,11 +3,10 @@ import { createServer } from 'http'
 import { Server } from 'socket.io'
 import cors from 'cors'
 import os from 'os'
-import { dbHelpers } from './db.js'
-import db from './db.js'
 import gameStateRouter from './api/game-state.js'
 import debugLogsRouter, { addServerEventLog } from './api/debug-logs.js'
 import { forwardLogToVercel } from './utils/render-log-forwarder.js'
+import { getLeaderboard, getWinCount, getWinsForPlayers, getAllMatches, getAllProfiles, getProfile, saveProfile, updateProfile, deleteProfile } from './services/nocode-backend.js'
 
 // Debug logging flag - set to true for verbose debugging
 const DEBUG_LOGGING = process.env.DEBUG_LOGGING === 'true' || false
@@ -47,12 +46,21 @@ const allowedOrigins = [
   /^http:\/\/127\.0\.0\.1:3000$/,
   /^http:\/\/192\.168\.\d+\.\d+:3000$/, // 192.168.x.x
   /^http:\/\/10\.\d+\.\d+\.\d+:3000$/,  // 10.x.x.x
-  /^http:\/\/172\.(1[6-9]|2[0-9]|3[0-1])\.\d+\.\d+:3000$/ // 172.16-31.x.x
+  /^http:\/\/172\.(1[6-9]|2[0-9]|3[0-1])\.\d+\.\d+:3000$/, // 172.16-31.x.x
+  /^https:\/\/.*\.vercel\.app$/, // Vercel deployments
+  /^https:\/\/.*\.vercel\.app\/.*$/ // Vercel deployments with paths
 ]
 
 // Add production client URL from environment variable if provided
 if (process.env.CLIENT_URL) {
-  allowedOrigins.push(process.env.CLIENT_URL)
+  // If CLIENT_URL is a string, add it as a regex pattern
+  if (typeof process.env.CLIENT_URL === 'string') {
+    // Escape special regex characters and create a pattern
+    const escaped = process.env.CLIENT_URL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    allowedOrigins.push(new RegExp(`^${escaped}$`))
+  } else {
+    allowedOrigins.push(process.env.CLIENT_URL)
+  }
 }
 
 const io = new Server(httpServer, {
@@ -71,16 +79,23 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' })) // Increase limit for client logs
 
 // Helper function to get local network IP address
+// Only returns 192.168.x.x addresses (for localhost development)
+// Returns null if no 192.168.x.x address is found
 function getLocalNetworkIP() {
   const interfaces = os.networkInterfaces()
+  
+  // Only look for 192.168.x.x addresses
   for (const name of Object.keys(interfaces)) {
     for (const iface of interfaces[name]) {
-      // Skip internal (loopback) and non-IPv4 addresses
       if (iface.family === 'IPv4' && !iface.internal) {
-        return iface.address
+        // Only return 192.168.x.x addresses
+        if (/^192\.168\./.test(iface.address)) {
+          return iface.address
+        }
       }
     }
   }
+  
   return null
 }
 
@@ -93,41 +108,16 @@ app.get('/health', async (req, res) => {
   const uptimeHours = Math.floor(uptimeMinutes / 60)
   const uptimeDays = Math.floor(uptimeHours / 24)
   
-  // Check database status
-  let dbStatus = 'unknown'
-  let dbError = null
+  // Get stats from in-memory state (no database needed)
   let activeRooms = 0
   let activePlayers = 0
-  let totalRooms = 0
   
-  try {
-    // Quick database check
-    const dbCheck = db.prepare('SELECT 1 as test').get()
-    dbStatus = dbCheck ? 'connected' : 'error'
-    
-    // Get active rooms count
-    const activeRoomsResult = db.prepare(`
-      SELECT COUNT(DISTINCT room_id) as count 
-      FROM players 
-      WHERE left_at IS NULL
-    `).get()
-    activeRooms = activeRoomsResult?.count || 0
-    
-    // Get active players count
-    const activePlayersResult = db.prepare(`
-      SELECT COUNT(*) as count 
-      FROM players 
-      WHERE left_at IS NULL
-    `).get()
-    activePlayers = activePlayersResult?.count || 0
-    
-    // Get total rooms in database
-    const totalRoomsResult = db.prepare('SELECT COUNT(*) as count FROM rooms').get()
-    totalRooms = totalRoomsResult?.count || 0
-  } catch (error) {
-    dbStatus = 'error'
-    dbError = error.message
-    console.error('[Health] Database check failed:', error)
+  // Count active rooms and players from in-memory rooms
+  for (const room of rooms.values()) {
+    if (room.players.size > 0) {
+      activeRooms++
+      activePlayers += room.players.size
+    }
   }
   
   // Get socket connection stats
@@ -154,12 +144,10 @@ app.get('/health', async (req, res) => {
       formatted: `${uptimeDays}d ${uptimeHours % 24}h ${uptimeMinutes % 60}m ${uptimeSeconds % 60}s`
     },
     timestamp: new Date().toISOString(),
-    database: {
-      status: dbStatus,
-      error: dbError,
+    rooms: {
       activeRooms,
       activePlayers,
-      totalRooms
+      totalRooms: rooms.size
     },
     sockets: socketStats,
     render: renderInfo,
@@ -178,12 +166,12 @@ app.use('/api/debug', debugLogsRouter)
 // API endpoint to get server connection info
 app.get('/api/connection-info', (req, res) => {
   try {
-    const networkIP = getLocalNetworkIP()
+    const networkIP = getLocalNetworkIP() // Only returns 192.168.x.x or null
     const frontendPort = 3000 // Frontend port (where users connect)
     res.json({
-      hostname: networkIP || 'localhost',
+      hostname: networkIP || null, // Only 192.168.x.x, no localhost fallback
       port: frontendPort,
-      url: networkIP ? `${networkIP}:${frontendPort}` : `localhost:${frontendPort}`
+      url: networkIP ? `${networkIP}:${frontendPort}` : null
     })
   } catch (error) {
     console.error('[API] Error getting connection info:', error)
@@ -193,6 +181,9 @@ app.get('/api/connection-info', (req, res) => {
 
 // Store active game rooms (in-memory for real-time state)
 const rooms = new Map()
+
+// Store active user profile sessions (in-memory)
+const activeSessions = new Set()
 
 // Cache for ended room IDs to avoid querying database on every request
 let endedRoomIdsCache = new Set()
@@ -225,7 +216,8 @@ function findUserProfileIdBySocket(room, socketId) {
 }
 
 // Helper function to emit room snapshot (canonical room state event)
-function emitRoomSnapshot(room) {
+// Refreshes player emoji/color from database to ensure latest values
+async function emitRoomSnapshot(room) {
   if (!room) {
     if (DEBUG_LOGGING) {
       console.log('[DEBUG] [EMIT-SNAPSHOT] Room is null/undefined, cannot emit')
@@ -234,24 +226,100 @@ function emitRoomSnapshot(room) {
   }
   
   const players = Array.from(room.players.values())
+  
+  // Refresh player emoji/color from database (source of truth)
+  // This ensures snapshots always have the latest values even if room was created with stale data
+  // ALWAYS fetch from NoCodeBackend - NO FALLBACKS to in-memory data
+  const playersWithFreshData = await Promise.all(players.map(async (p) => {
+    try {
+      const userProfile = await getProfile(p.userProfileId)
+      if (userProfile) {
+        // ALWAYS use NCB database values - NO FALLBACKS to in-memory values, NO INDEX-BASED LOOKUPS
+        // Handle both camelCase and PascalCase field names from API
+        // If NCB doesn't have the value, use default - NEVER use p.emoji, p.color, or color_id index
+        const dbEmoji = (userProfile.emoji !== null && userProfile.emoji !== undefined && userProfile.emoji !== '') 
+          ? userProfile.emoji 
+          : ((userProfile.Emoji !== null && userProfile.Emoji !== undefined && userProfile.Emoji !== '')
+            ? userProfile.Emoji
+            : '⚪')
+        const dbColor = (userProfile.color !== null && userProfile.color !== undefined && userProfile.color !== '')
+          ? userProfile.color
+          : ((userProfile.Color !== null && userProfile.Color !== undefined && userProfile.Color !== '')
+            ? userProfile.Color
+            : '#FFFFFF')
+        
+        // Log if values changed from in-memory
+        if (p.emoji !== dbEmoji || p.color !== dbColor) {
+          console.log(`[EMIT-SNAPSHOT] Refreshed player ${p.userProfileId} (${p.name}) from NCB - emoji: ${p.emoji} -> ${dbEmoji}, color: ${p.color} -> ${dbColor}`)
+        }
+        
+        // Update in-memory player data with fresh database values
+        p.emoji = dbEmoji
+        p.color = dbColor
+        
+        return {
+          userProfileId: p.userProfileId,
+          socketId: p.socketId,
+          name: p.name,
+          score: p.score || 0,
+          ready: p.ready || false,
+          color: dbColor,
+          emoji: dbEmoji,
+          colorId: p.colorId,
+          profileName: p.profileName,
+          profileCreatedAt: p.profileCreatedAt,
+          profileLastSeen: p.profileLastSeen
+        }
+      } else {
+        // Profile not found in NCB - use defaults, NOT in-memory values
+        console.warn(`[EMIT-SNAPSHOT] Profile ${p.userProfileId} not found in NCB, using defaults`)
+        const defaultEmoji = '⚪'
+        const defaultColor = '#FFFFFF'
+        p.emoji = defaultEmoji
+        p.color = defaultColor
+        return {
+          userProfileId: p.userProfileId,
+          socketId: p.socketId,
+          name: p.name,
+          score: p.score || 0,
+          ready: p.ready || false,
+          color: defaultColor,
+          emoji: defaultEmoji,
+          colorId: p.colorId,
+          profileName: p.profileName,
+          profileCreatedAt: p.profileCreatedAt,
+          profileLastSeen: p.profileLastSeen
+        }
+      }
+    } catch (error) {
+      // Error fetching from NCB - use defaults, NOT in-memory values
+      console.error(`[EMIT-SNAPSHOT] Error refreshing profile ${p.userProfileId} from NCB:`, error)
+      const defaultEmoji = '⚪'
+      const defaultColor = '#FFFFFF'
+      p.emoji = defaultEmoji
+      p.color = defaultColor
+      return {
+        userProfileId: p.userProfileId,
+        socketId: p.socketId,
+        name: p.name,
+        score: p.score || 0,
+        ready: p.ready || false,
+        color: defaultColor,
+        emoji: defaultEmoji,
+        colorId: p.colorId,
+        profileName: p.profileName,
+        profileCreatedAt: p.profileCreatedAt,
+        profileLastSeen: p.profileLastSeen
+      }
+    }
+  }))
+  
   const snapshot = {
     roomId: room.id,
     hostUserProfileId: room.hostUserProfileId,
     status: room.gameState?.state || 'waiting',
     selectedGame: room.gameState?.selectedGame || null,
-    players: players.map(p => ({
-      userProfileId: p.userProfileId,
-      socketId: p.socketId,
-      name: p.name,
-      score: p.score || 0,
-      ready: p.ready || false,
-      color: p.color,
-      emoji: p.emoji,
-      colorId: p.colorId,
-      profileName: p.profileName,
-      profileCreatedAt: p.profileCreatedAt,
-      profileLastSeen: p.profileLastSeen
-    }))
+    players: playersWithFreshData
   }
   
   if (DEBUG_LOGGING) {
@@ -309,17 +377,9 @@ function broadcastRoomList() {
             hostName = hostPlayer.name || hostPlayer.profileName || 'Unknown'
             hostEmoji = hostPlayer.emoji || '👤'
           } else {
-            // Host not in memory, try database
-            const dbHost = db.prepare(`
-              SELECT up.name, pc.emoji
-              FROM user_profiles up
-              LEFT JOIN player_colors pc ON up.color_id = pc.id
-              WHERE up.id = ?
-            `).get(room.hostUserProfileId)
-            if (dbHost) {
-              hostName = dbHost.name
-              hostEmoji = dbHost.emoji || '👤'
-            }
+            // Host not in memory - use default values
+            hostName = 'Unknown'
+            hostEmoji = '👤'
           }
         }
         
@@ -333,67 +393,8 @@ function broadcastRoomList() {
         }
       })
     
-    // Also get active rooms from database (rooms with active players but not in memory)
-    let dbRooms = []
-    if (memoryRooms.length > 0) {
-      dbRooms = db.prepare(`
-        SELECT 
-          r.id,
-          r.state,
-          r.host_user_profile_id,
-          COUNT(p.id) as player_count
-        FROM rooms r
-        LEFT JOIN players p ON r.id = p.room_id AND p.left_at IS NULL
-        WHERE r.state IN ('waiting', 'playing')
-          AND r.id NOT IN (${memoryRooms.map(() => '?').join(',')})
-        GROUP BY r.id
-        HAVING player_count > 0 AND player_count < 4
-      `).all(...memoryRooms.map(r => r.id))
-    } else {
-      // No memory rooms, get all active rooms from database
-      dbRooms = db.prepare(`
-        SELECT 
-          r.id,
-          r.state,
-          r.host_user_profile_id,
-          COUNT(p.id) as player_count
-        FROM rooms r
-        LEFT JOIN players p ON r.id = p.room_id AND p.left_at IS NULL
-        WHERE r.state IN ('waiting', 'playing')
-        GROUP BY r.id
-        HAVING player_count > 0 AND player_count < 4
-      `).all()
-    }
-    
-    const dbRoomsFormatted = dbRooms.map(room => {
-      // Get host name and emoji from database
-      let hostName = 'Unknown'
-      let hostEmoji = '👤'
-      if (room.host_user_profile_id) {
-        const dbHost = db.prepare(`
-          SELECT up.name, pc.emoji
-          FROM user_profiles up
-          LEFT JOIN player_colors pc ON up.color_id = pc.id
-          WHERE up.id = ?
-        `).get(room.host_user_profile_id)
-        if (dbHost) {
-          hostName = dbHost.name
-          hostEmoji = dbHost.emoji || '👤'
-        }
-      }
-      
-      return {
-        id: room.id,
-        hostName: hostName,
-        hostEmoji: hostEmoji,
-        playerCount: room.player_count || 0,
-        maxPlayers: 4,
-        status: room.state || 'waiting'
-      }
-    })
-    
-    // Combine both sources
-    const allRooms = [...memoryRooms, ...dbRoomsFormatted]
+    // Rooms are in-memory only - no database queries needed
+    const allRooms = memoryRooms
       .sort((a, b) => b.playerCount - a.playerCount) // Sort by player count (most players first)
     
     // Emit to LOBBY channel
@@ -423,13 +424,19 @@ setInterval(() => {
     const now = new Date()
     const staleThreshold = new Date(now.getTime() - STALE_PLAYER_TIMEOUT_MS)
     
-    // Find all active players (left_at IS NULL) in the database
-    const activePlayers = db.prepare(`
-      SELECT p.id, p.socket_id, p.room_id, p.joined_at, p.user_profile_id, r.last_activity
-      FROM players p
-      LEFT JOIN rooms r ON p.room_id = r.id
-      WHERE p.left_at IS NULL
-    `).all()
+    // Find all active players from in-memory rooms
+    const activePlayers = []
+    for (const [roomId, room] of rooms.entries()) {
+      for (const [userProfileId, player] of room.players.entries()) {
+        activePlayers.push({
+          id: userProfileId,
+          socket_id: player.socketId,
+          room_id: roomId,
+          user_profile_id: userProfileId,
+          last_activity: room.lastActivity
+        })
+      }
+    }
     
     let cleanedCount = 0
     for (const player of activePlayers) {
@@ -438,7 +445,7 @@ setInterval(() => {
       
       if (lastActivity < staleThreshold) {
         // Player is stale - mark as left
-        db.prepare('UPDATE players SET left_at = CURRENT_TIMESTAMP WHERE id = ?').run(player.id)
+        // Player data stored in-memory only (no database persistence)
         
         // Also check if they're in an in-memory room and remove them
         // CRITICAL FIX: room.players is keyed by userProfileId, not socket_id
@@ -459,14 +466,15 @@ setInterval(() => {
           // Clean up room if empty
           if (room.players.size === 0) {
             rooms.delete(player.room_id)
-            dbHelpers.updateRoomState(player.room_id, 'ended')
+            // Room state stored in-memory only (no database persistence)
             invalidateEndedRoomsCache(player.room_id)
             console.log(`[CLEANUP] Room ${player.room_id} deleted (empty after cleanup)`)
           }
         }
         
         // Log the cleanup
-        dbHelpers.addGameEvent(player.room_id, player.id, 'player_left_stale', { reason: 'inactivity_timeout' })
+        // Game events no longer persisted (match results saved to NoCodeBackend)
+      // dbHelpers.addGameEvent(player.room_id, player.id, 'player_left_stale', { reason: 'inactivity_timeout' })
         cleanedCount++
         console.log(`[CLEANUP] Marked stale player ${player.socket_id} (profile: ${player.user_profile_id}) as left`)
       }
@@ -480,52 +488,22 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000) // Run every 5 minutes
 
-// Refresh ended room IDs cache periodically
+// Refresh ended room IDs cache periodically (no longer needed - rooms are in-memory only)
+// Cache is now maintained by invalidateEndedRoomsCache() when rooms end
 setInterval(() => {
   try {
-    const endedRoomsQuery = db.prepare(`SELECT id FROM rooms WHERE state = 'ended'`).all()
-    endedRoomIdsCache = new Set(endedRoomsQuery.map(r => r.id))
+    // Ended rooms cache no longer needed (rooms are in-memory only)
+    // Just clear the cache periodically since rooms are ephemeral
+    endedRoomIdsCache.clear()
     endedRoomIdsCacheTime = Date.now()
-    if (endedRoomIdsCache.size > 0) {
-      console.log(`[CACHE] Refreshed ended rooms cache: ${endedRoomIdsCache.size} ended rooms`)
-    }
   } catch (error) {
     console.error('[CACHE] Error refreshing ended rooms cache:', error)
   }
 }, ENDED_ROOMS_CACHE_TTL)
 
-// Clean up very old ended rooms from database (older than 7 days)
-const OLD_ROOM_CLEANUP_DAYS = 7
-setInterval(() => {
-  try {
-    const cutoffDate = new Date()
-    cutoffDate.setDate(cutoffDate.getDate() - OLD_ROOM_CLEANUP_DAYS)
-    
-    // Get count of old ended rooms before deletion
-    const oldRooms = db.prepare(`
-      SELECT COUNT(*) as count 
-      FROM rooms 
-      WHERE state = 'ended' AND last_activity < ?
-    `).get(cutoffDate.toISOString())
-    
-    if (oldRooms && oldRooms.count > 0) {
-      // Delete old ended rooms (cascade will handle related players and events)
-      const result = db.prepare(`
-        DELETE FROM rooms 
-        WHERE state = 'ended' AND last_activity < ?
-      `).run(cutoffDate.toISOString())
-      
-      console.log(`[CLEANUP] Deleted ${result.changes} old ended rooms (older than ${OLD_ROOM_CLEANUP_DAYS} days)`)
-      
-      // Refresh cache after cleanup
-      const endedRoomsQuery = db.prepare(`SELECT id FROM rooms WHERE state = 'ended'`).all()
-      endedRoomIdsCache = new Set(endedRoomsQuery.map(r => r.id))
-      endedRoomIdsCacheTime = Date.now()
-    }
-  } catch (error) {
-    console.error('[CLEANUP] Error cleaning up old ended rooms:', error)
-  }
-}, 24 * 60 * 60 * 1000) // Run once per day
+// Clean up very old ended rooms (no longer needed - rooms are in-memory only and cleaned up immediately)
+// Rooms are automatically cleaned up when empty, so no periodic cleanup needed
+// Removed periodic cleanup interval - rooms are in-memory only and cleaned up immediately when empty
 
 io.on('connection', (socket) => {
   if (DEBUG_LOGGING) {
@@ -559,13 +537,15 @@ io.on('connection', (socket) => {
   })
 
   // Create a new room
-  socket.on('create-room', ({ playerName, userProfileId, colorId }) => {
+  socket.on('create-room', async ({ playerName, userProfileId, colorId, emoji, color }) => {
     try {
       if (DEBUG_LOGGING) {
         console.log('[DIAG] [SERVER] [CREATE-ROOM] Step A: Received create-room', {
           socketId: socket.id,
           playerName: playerName,
           userProfileId: userProfileId,
+          emoji: emoji,
+          color: color,
           timestamp: Date.now()
         })
       }
@@ -574,13 +554,41 @@ io.on('connection', (socket) => {
     
     const name = playerName?.trim() || `Player ${Math.floor(Math.random() * 1000)}`
     
-    // Get or create user profile and assign emoji
-    const userProfile = dbHelpers.getOrCreateUserProfile(name, userProfileId, colorId)
-    const colorInfo = dbHelpers.getPlayerColorById(userProfile.color_id)
+    // Get user profile from NoCodeBackend (profiles are created client-side)
+    if (!userProfileId) {
+      console.log(`[SOCKET] Cannot create room without userProfileId`)
+      socket.emit('room-error', { message: 'User profile required to create room' })
+      return
+    }
     
-    // Create room in database with host user profile ID
-    dbHelpers.createRoom(roomId, 'waiting', userProfile.id)
-    dbHelpers.addGameEvent(roomId, null, 'room_created', { roomId })
+    let userProfile = null
+    try {
+      userProfile = await getProfile(userProfileId)
+    } catch (error) {
+      console.error(`[SOCKET] Error fetching profile ${userProfileId}:`, error)
+    }
+    
+    if (!userProfile) {
+      console.log(`[SOCKET] Profile ${userProfileId} not found in NoCodeBackend`)
+      socket.emit('room-error', { message: 'User profile not found. Please create a profile first.' })
+      return
+    }
+    
+    // ALWAYS use emoji and color from NoCodeBackend database - NO FALLBACKS, NO INDEX-BASED LOOKUPS
+    // Ignore client-sent values completely - NEVER use color_id to look up emoji/color
+    // Handle both camelCase and PascalCase field names from API
+    const finalEmoji = (userProfile.emoji !== null && userProfile.emoji !== undefined && userProfile.emoji !== '')
+      ? userProfile.emoji
+      : ((userProfile.Emoji !== null && userProfile.Emoji !== undefined && userProfile.Emoji !== '')
+        ? userProfile.Emoji
+        : '⚪')
+    const finalColor = (userProfile.color !== null && userProfile.color !== undefined && userProfile.color !== '')
+      ? userProfile.color
+      : ((userProfile.Color !== null && userProfile.Color !== undefined && userProfile.Color !== '')
+        ? userProfile.Color
+        : '#FFFFFF')
+    console.log(`[CREATE-ROOM] Profile ${userProfile.id} from NCB - emoji: ${finalEmoji}, color: ${finalColor}, color_id: ${userProfile.color_id} (NOT using color_id)`)
+      // Game events no longer persisted (rooms are in-memory only)
     
     const room = {
       id: roomId,
@@ -608,8 +616,8 @@ io.on('connection', (socket) => {
       name: name,
       score: 0,
       ready: false, // Ready status for game start
-      color: colorInfo?.color || '#FFFFFF',
-      emoji: colorInfo?.emoji || '⚪',
+      color: finalColor, // Use NoCodeBackend color
+      emoji: finalEmoji, // Use NoCodeBackend emoji
       colorId: userProfile.color_id,
       profileName: userProfile.name,
       profileCreatedAt: userProfile.created_at,
@@ -618,29 +626,14 @@ io.on('connection', (socket) => {
     room.players.set(userProfile.id, playerData)
     room.socketIds.set(userProfile.id, socket.id)
     
-    // Add player to database with user profile and color
-    // Use userProfileId as player ID in database (stable identifier)
-    const playerId = userProfile.id
-    
-    // Check if player already exists in database (from a previous room)
-    // If so, delete the old record first to avoid UNIQUE constraint violation
-    const existingPlayerRecord = dbHelpers.getPlayer(playerId)
-    if (existingPlayerRecord) {
-      console.log(`[SOCKET] Player ${playerId} already exists in database (room: ${existingPlayerRecord.room_id}), removing old record before creating new room`)
-      // Delete the old player record
-      dbHelpers.removePlayerById(playerId)
-    }
-    
-    dbHelpers.addPlayer(playerId, roomId, socket.id, name, userProfile.id, userProfile.color_id, 0)
-    dbHelpers.addGameEvent(roomId, playerId, 'player_joined', { playerName: name, emoji: colorInfo?.emoji })
-    dbHelpers.updateRoomActivity(roomId)
+    // Room and player data stored in-memory only (no database persistence)
     
     rooms.set(roomId, room)
     socket.join(roomId)
     socket.leave('LOBBY')
     
     if (DEBUG_LOGGING) {
-      console.log(`[SOCKET] Room ${roomId} created by ${socket.id} (${name}, profile: ${userProfile.id}) with emoji ${colorInfo?.emoji}. Total rooms in memory: ${rooms.size}`)
+      console.log(`[SOCKET] Room ${roomId} created by ${socket.id} (${name}, profile: ${userProfile.id}) with emoji ${finalEmoji}. Total rooms in memory: ${rooms.size}`)
       console.log(`[SOCKET] Room ${roomId} gameState:`, room.gameState.state)
       console.log(`[SOCKET] Room ${roomId} playerCount:`, room.players.size)
       console.log('[DIAG] [SERVER] [CREATE-ROOM] Step B: Room created in memory', {
@@ -669,16 +662,17 @@ io.on('connection', (socket) => {
       console.log('[DIAG] [SERVER] [CREATE-ROOM] Step D: About to emit room-snapshot', {
         roomId: room.id,
         roomIdType: typeof room.id,
-      playersCount: room.players.size,
-      snapshotPayload: {
-        roomId: room.id,
-        hostUserProfileId: room.hostUserProfileId,
-        playersCount: Array.from(room.players.values()).length
-      },
-      timestamp: Date.now()
-    })
+        playersCount: room.players.size,
+        snapshotPayload: {
+          roomId: room.id,
+          hostUserProfileId: room.hostUserProfileId,
+          playersCount: Array.from(room.players.values()).length
+        },
+        timestamp: Date.now()
+      })
+    }
     
-    emitRoomSnapshot(room)
+    emitRoomSnapshot(room).catch(err => console.error('[EMIT-SNAPSHOT] Error:', err))
     
     // Broadcast new room to LOBBY (clients on room-join screen)
     io.to('LOBBY').emit('room-list-updated', {
@@ -703,7 +697,7 @@ io.on('connection', (socket) => {
   })
 
   // Join an existing room
-  socket.on('join-room', ({ roomId, playerName, userProfileId, colorId }) => {
+  socket.on('join-room', async ({ roomId, playerName, userProfileId, colorId, emoji, color }) => {
     try {
       if (DEBUG_LOGGING) {
         console.log('[DIAG] [SERVER] [JOIN-ROOM] Step A: Received join-room', {
@@ -711,120 +705,22 @@ io.on('connection', (socket) => {
           roomId: roomId,
           roomIdType: typeof roomId,
           userProfileId: userProfileId,
+          emoji: emoji,
+          color: color,
           timestamp: Date.now()
         })
       }
-      addServerEventLog(`Join room request from ${socket.id}: roomId=${roomId}, playerName=${playerName || 'none'}, userProfileId=${userProfileId || 'none'}`, 'info', { socketId: socket.id, roomId, playerName, userProfileId, colorId })
+      addServerEventLog(`Join room request from ${socket.id}: roomId=${roomId}, playerName=${playerName || 'none'}, userProfileId=${userProfileId || 'none'}`, 'info', { socketId: socket.id, roomId, playerName, userProfileId, colorId, emoji, color })
       
-      // Check database first
-      const dbRoom = dbHelpers.getRoom(roomId)
-      if (!dbRoom) {
-        console.log(`[SOCKET] Room ${roomId} not found in database`)
-        socket.emit('room-error', { message: 'Room not found' })
+      // Get in-memory room (rooms are ephemeral and only exist while players are connected)
+      let room = rooms.get(roomId)
+      if (!room) {
+        console.log(`[SOCKET] Room ${roomId} not found (rooms are in-memory only)`)
+        socket.emit('room-error', { message: 'Room not found. Rooms are only active while players are connected.' })
         return
       }
-    
-    // Get or create in-memory room
-    let room = rooms.get(roomId)
-    if (!room) {
-      console.log(`[SOCKET] Room ${roomId} not in memory, loading from database`)
-      // Load room from database if not in memory
-      const dbPlayers = dbHelpers.getPlayersByRoom(roomId)
-      // Get the first player (room creator/host) by sorting players by joined_at timestamp
-      // The first player to join is the host
-      const activeDbPlayers = dbPlayers.filter(p => !p.left_at)
-      if (DEBUG_LOGGING) {
-        console.log(`[DIAG] [SERVER] Loading room from DB: ${activeDbPlayers.length} active players found`, {
-          activePlayers: activeDbPlayers.map(p => ({ userProfileId: p.user_profile_id, name: p.name, socketId: p.socket_id })),
-          timestamp: Date.now()
-        })
-      }
-      const firstPlayer = activeDbPlayers.length > 0 
-        ? activeDbPlayers.sort((a, b) => 
-            new Date(a.joined_at || 0) - new Date(b.joined_at || 0)
-          )[0]
-        : null
-      // Check if the first player's socket is still connected
-      let firstPlayerSocketId = firstPlayer?.socket_id || (dbPlayers.length > 0 ? dbPlayers[0].socket_id : null)
-      if (firstPlayerSocketId) {
-        const hostSocket = io.sockets.sockets.get(firstPlayerSocketId)
-        if (!hostSocket || !hostSocket.connected) {
-          // Host socket is not connected - set to null, will be restored when host rejoins
-          console.log(`[SOCKET] Host socket ${firstPlayerSocketId} not connected, will be restored on rejoin`)
-          firstPlayerSocketId = null
-        }
-      }
       
-      // Find current host socket if host is connected
-      let currentHostSocketId = null
-      if (dbRoom.host_user_profile_id) {
-        for (const dbPlayer of activeDbPlayers) {
-          if (dbPlayer.user_profile_id && String(dbPlayer.user_profile_id) === String(dbRoom.host_user_profile_id)) {
-            const hostSocket = io.sockets.sockets.get(dbPlayer.socket_id)
-            if (hostSocket && hostSocket.connected) {
-              currentHostSocketId = dbPlayer.socket_id
-              break
-            }
-          }
-        }
-      }
-      
-      room = {
-        id: roomId,
-        players: new Map(), // Keyed by userProfileId
-        socketIds: new Map(), // Map userProfileId -> socketId
-        hostUserProfileId: dbRoom.host_user_profile_id, // Host is tracked by profile ID (persistent)
-        hostSocketId: currentHostSocketId, // Current host socket (may be null if disconnected)
-        readyPlayers: new Set(), // Track which userProfileIds are ready
-        countdownInterval: null, // Countdown timer interval
-        countdownSeconds: null, // Current countdown value
-        gameState: {
-          state: dbRoom.state,
-          kiwiPositions: new Map(), // Keyed by userProfileId
-          pipes: [],
-          score: 0,
-          lastPipeX: 400
-        },
-        lastActivity: dbRoom.last_activity || new Date().toISOString()
-      }
-      // Load existing players from database (keyed by userProfileId)
-      // CRITICAL: Only load ACTIVE players (left_at IS NULL), not all players
-      // Only load players with valid userProfileId (skip anonymous players for now)
-      for (const dbPlayer of activeDbPlayers) {
-        if (dbPlayer.user_profile_id) {
-          // Check if socket is still connected
-          const isConnected = dbPlayer.socket_id && io.sockets.sockets.get(dbPlayer.socket_id)?.connected
-          room.players.set(dbPlayer.user_profile_id, {
-            userProfileId: dbPlayer.user_profile_id,
-            socketId: isConnected ? dbPlayer.socket_id : null,
-            name: dbPlayer.name,
-            score: dbPlayer.score || 0,
-            ready: false, // Ready status for game start
-            color: dbPlayer.color || '#FFFFFF',
-            emoji: dbPlayer.emoji || '⚪',
-            colorId: dbPlayer.color_id,
-            profileName: dbPlayer.profile_name,
-            profileCreatedAt: dbPlayer.profile_created_at,
-            profileLastSeen: dbPlayer.profile_last_seen
-          })
-          if (isConnected) {
-            room.socketIds.set(dbPlayer.user_profile_id, dbPlayer.socket_id)
-          }
-        }
-      }
-      rooms.set(roomId, room)
-      if (DEBUG_LOGGING) {
-        console.log(`[SOCKET] Loaded room ${roomId} from database with ${room.players.size} existing players, host: ${room.hostSocketId}`)
-        console.log(`[DIAG] [SERVER] Room loaded from DB - players in Map:`, {
-          roomId: roomId,
-          playersCount: room.players.size,
-          playerKeys: Array.from(room.players.keys()),
-          players: Array.from(room.players.values()).map(p => ({ userProfileId: p.userProfileId, name: p.name })),
-          timestamp: Date.now()
-        })
-      }
-    } else {
-      // Room exists in memory - log current state
+      // Log current state
       if (DEBUG_LOGGING) {
         console.log(`[DIAG] [SERVER] Room exists in memory - current state:`, {
           roomId: roomId,
@@ -834,182 +730,164 @@ io.on('connection', (socket) => {
           timestamp: Date.now()
         })
       }
-    }
-    
-    if (room.players.size >= 4) {
-      console.log(`[SOCKET] Room ${roomId} is full (${room.players.size}/4)`)
-      socket.emit('room-error', { message: 'Room is full' })
-      return
-    }
-    
-    const name = playerName?.trim() || `Player ${room.players.size + 1}`
-    
-    // Get or create user profile and assign emoji (use provided userProfileId and colorId if available)
-    const userProfile = dbHelpers.getOrCreateUserProfile(name, userProfileId, colorId)
-    const colorInfo = dbHelpers.getPlayerColorById(userProfile.color_id)
-    
-    // Require userProfileId for room membership (stable identity)
-    if (!userProfile.id) {
-      console.log(`[SOCKET] Cannot join room without userProfileId`)
-      socket.emit('room-error', { message: 'User profile required to join room' })
-      return
-    }
-    
-    // Check if this user profile is already in the room (reconnect scenario)
-    const existingPlayer = room.players.get(userProfile.id)
-    if (existingPlayer) {
-      console.log(`[SOCKET] Player with userProfileId ${userProfile.id} reconnecting (old socket: ${existingPlayer.socketId}, new socket: ${socket.id})`)
-      // Update socket ID for this player
-      const oldSocketId = existingPlayer.socketId
-      if (oldSocketId && oldSocketId !== socket.id) {
-        // Mark old socket's player record as left in database
-        dbHelpers.removePlayer(oldSocketId)
-      }
-      // Update socket mapping
-      existingPlayer.socketId = socket.id
-      room.socketIds.set(userProfile.id, socket.id)
-    } else {
-      // New player joining
-      const playerData = {
-        userProfileId: userProfile.id,
-        socketId: socket.id,
-        name: name,
-        score: 0,
-        ready: false,
-        color: colorInfo?.color || '#FFFFFF',
-        emoji: colorInfo?.emoji || '⚪',
-        colorId: userProfile.color_id,
-        profileName: userProfile.name,
-        profileCreatedAt: userProfile.created_at,
-        profileLastSeen: userProfile.last_seen
-      }
-      room.players.set(userProfile.id, playerData)
-      room.socketIds.set(userProfile.id, socket.id)
-      if (DEBUG_LOGGING) {
-        console.log(`[DIAG] [SERVER] New player added to room.players Map:`, {
-          userProfileId: userProfile.id,
-          name: name,
-          roomPlayersCount: room.players.size,
-          allPlayerKeys: Array.from(room.players.keys()),
-          allPlayers: Array.from(room.players.values()).map(p => ({ userProfileId: p.userProfileId, name: p.name })),
-        timestamp: Date.now()
-      })
-    }
-    
-    if (DEBUG_LOGGING) {
-      console.log('[DIAG] [SERVER] [JOIN-ROOM] Step B: Player added to room', {
-      roomId: roomId,
-      roomIdType: typeof roomId,
-      playersCount: room.players.size,
-      joiningUserProfileId: userProfile.id,
-      allPlayerKeys: Array.from(room.players.keys()),
-      allPlayers: Array.from(room.players.values()).map(p => ({ userProfileId: p.userProfileId, name: p.name })),
-      timestamp: Date.now()
-    })
-    
-    // Check if this is the host reconnecting (by profile ID)
-    const isHostReconnecting = room.hostUserProfileId && 
-      userProfile.id && 
-      String(room.hostUserProfileId) === String(userProfile.id) &&
-      (!room.hostSocketId || !io.sockets.sockets.get(room.hostSocketId)?.connected)
-    
-    if (isHostReconnecting) {
-      console.log(`[SOCKET] Host reconnecting to room ${roomId} with new socket ${socket.id}`)
-      // Clear any reconnect timeout
-      if (room.hostReconnectTimeout) {
-        clearTimeout(room.hostReconnectTimeout)
-        room.hostReconnectTimeout = null
-        console.log(`[SOCKET] Cleared host reconnect timeout for room ${roomId}`)
-        addServerEventLog(`Host reconnected, cleared timeout for room ${roomId}`, 'info', { roomId, socketId: socket.id })
-      }
-      // Restore host socket ID
-      room.hostSocketId = socket.id
-      // Notify other players that host reconnected
-      io.to(roomId).emit('host-reconnected', {
-        message: 'Host has reconnected'
-      })
       
-      // Emit canonical room snapshot after host reconnect
-      emitRoomSnapshot(room)
-    }
-    
-    // Add/update player in database (use userProfileId as player ID)
-    const playerId = userProfile.id
-    
-    // Always check if player record exists in database first (including players who left)
-    const existingPlayerRecord = dbHelpers.getPlayer(playerId)
-    
-    // Also check if player left this room but is trying to rejoin
-    const leftPlayerRecord = db.prepare('SELECT * FROM players WHERE id = ? AND room_id = ? AND left_at IS NOT NULL').get(playerId, roomId)
-    
-    if (existingPlayerRecord) {
-      // Player record exists in database
-      if (existingPlayerRecord.room_id === roomId) {
-        // Player is already in this room - just update socket_id and clear left_at (rejoin scenario)
-        console.log(`[SOCKET] Player ${playerId} already in room ${roomId} in database, updating socket_id and clearing left_at`)
-        db.prepare('UPDATE players SET socket_id = ?, left_at = NULL WHERE id = ? AND room_id = ?').run(socket.id, playerId, roomId)
+      if (room.players.size >= 4) {
+        console.log(`[SOCKET] Room ${roomId} is full (${room.players.size}/4)`)
+        socket.emit('room-error', { message: 'Room is full' })
+        return
+      }
+      
+      const name = playerName?.trim() || `Player ${room.players.size + 1}`
+      
+      // Get user profile from NoCodeBackend (profiles are created client-side)
+      if (!userProfileId) {
+        console.log(`[SOCKET] Cannot join room without userProfileId`)
+        socket.emit('room-error', { message: 'User profile required to join room' })
+        return
+      }
+      
+      let userProfile = null
+      try {
+        userProfile = await getProfile(userProfileId)
+        console.log(`[JOIN-ROOM] Raw profile from database for ${userProfileId}:`, JSON.stringify(userProfile, null, 2))
+        console.log(`[JOIN-ROOM] Profile fields - emoji: ${userProfile.emoji}, Emoji: ${userProfile.Emoji}, color: ${userProfile.color}, Color: ${userProfile.Color}, color_id: ${userProfile.color_id}, colorId: ${userProfile.colorId}`)
+      } catch (error) {
+        console.error(`[SOCKET] Error fetching profile ${userProfileId}:`, error)
+      }
+      
+      if (!userProfile) {
+        console.log(`[SOCKET] Profile ${userProfileId} not found in NoCodeBackend`)
+        socket.emit('room-error', { message: 'User profile not found. Please create a profile first.' })
+        return
+      }
+      
+      // ALWAYS use emoji and color from NoCodeBackend database - NO FALLBACKS, NO INDEX-BASED LOOKUPS
+      // Handle both camelCase and PascalCase field names from API
+      // If NCB doesn't have the value, use default - NEVER use in-memory, client-sent, or color_id index values
+      const finalEmoji = (userProfile.emoji !== null && userProfile.emoji !== undefined && userProfile.emoji !== '') 
+        ? userProfile.emoji 
+        : ((userProfile.Emoji !== null && userProfile.Emoji !== undefined && userProfile.Emoji !== '')
+          ? userProfile.Emoji
+          : '⚪')
+      const finalColor = (userProfile.color !== null && userProfile.color !== undefined && userProfile.color !== '')
+        ? userProfile.color
+        : ((userProfile.Color !== null && userProfile.Color !== undefined && userProfile.Color !== '')
+          ? userProfile.Color
+          : '#FFFFFF')
+      console.log(`[JOIN-ROOM] Profile ${userProfile.id} (${userProfile.name || userProfile.Name}) from NCB - emoji: ${finalEmoji}, color: ${finalColor}`)
+      console.log(`[JOIN-ROOM] Client sent - emoji: ${emoji}, color: ${color} (completely ignored, using NCB only)`)
+      console.log(`[JOIN-ROOM] NOT using color_id (${userProfile.color_id || userProfile.colorId}) - using emoji/color fields directly`)
+      
+      // Require userProfileId for room membership (stable identity)
+      if (!userProfile.id) {
+        console.log(`[SOCKET] Cannot join room without userProfileId`)
+        socket.emit('room-error', { message: 'User profile required to join room' })
+        return
+      }
+      
+      // Check if this user profile is already in the room (reconnect scenario)
+      const existingPlayer = room.players.get(userProfile.id)
+      if (existingPlayer) {
+        console.log(`[SOCKET] Player with userProfileId ${userProfile.id} reconnecting (old socket: ${existingPlayer.socketId}, new socket: ${socket.id})`)
+        // Update socket ID for this player
+        const oldSocketId = existingPlayer.socketId
+        if (oldSocketId && oldSocketId !== socket.id) {
+          // Mark old socket's player record as left in database
+          // Player data stored in-memory only (no database persistence)
+        }
+        // Update socket mapping and emoji/color from NoCodeBackend database (source of truth)
+        existingPlayer.socketId = socket.id
+        existingPlayer.emoji = finalEmoji
+        existingPlayer.color = finalColor
+        room.socketIds.set(userProfile.id, socket.id)
+        console.log(`[JOIN-ROOM] Updated existing player ${userProfile.id} (${userProfile.name}) with emoji: ${finalEmoji}, color: ${finalColor}`)
       } else {
-        // Player is in a different room - delete old record and add to new room
-        console.log(`[SOCKET] Player ${playerId} exists in different room (${existingPlayerRecord.room_id}), removing and adding to room ${roomId}`)
-        dbHelpers.removePlayerById(playerId)
-        dbHelpers.addPlayer(playerId, roomId, socket.id, name, userProfile.id, userProfile.color_id, 0)
-      }
-    } else if (leftPlayerRecord) {
-      // Player left this room but is trying to rejoin - clear left_at and update socket_id
-      console.log(`[SOCKET] Player ${playerId} left room ${roomId} but is rejoining, clearing left_at and updating socket_id`)
-      db.prepare('UPDATE players SET socket_id = ?, left_at = NULL WHERE id = ? AND room_id = ?').run(socket.id, playerId, roomId)
-      
-      // Add player back to in-memory room if not already there
-      if (!existingPlayer) {
+        // New player joining
+        console.log(`[SOCKET] Adding new player ${userProfile.id} to room ${roomId}`)
         const playerData = {
           userProfileId: userProfile.id,
           socketId: socket.id,
           name: name,
-          score: leftPlayerRecord.score || 0,
-          ready: false, // Reset ready status on rejoin
-          color: colorInfo?.color || '#FFFFFF',
-          emoji: colorInfo?.emoji || '⚪',
-          colorId: userProfile.color_id,
+          score: 0,
+          ready: false,
+          color: finalColor,
+          emoji: finalEmoji,
           profileName: userProfile.name,
-          profileCreatedAt: userProfile.created_at,
-          profileLastSeen: userProfile.last_seen
+          profileCreatedAt: userProfile.createdAt || userProfile.created_at || null,
+          profileLastSeen: userProfile.lastSeen || userProfile.last_seen || null
         }
         room.players.set(userProfile.id, playerData)
         room.socketIds.set(userProfile.id, socket.id)
-        console.log(`[SOCKET] Re-added player ${playerId} to in-memory room ${roomId} after rejoin`)
+        if (DEBUG_LOGGING) {
+          console.log(`[DIAG] [SERVER] New player added to room.players Map:`, {
+            userProfileId: userProfile.id,
+            name: name,
+            roomPlayersCount: room.players.size,
+            allPlayerKeys: Array.from(room.players.keys()),
+            allPlayers: Array.from(room.players.values()).map(p => ({ userProfileId: p.userProfileId, name: p.name })),
+            timestamp: Date.now()
+          })
+        }
       }
-    } else {
-      // No existing record - add new player
-      if (!existingPlayer) {
-        // New player joining (not a reconnect in memory)
-        console.log(`[SOCKET] Adding new player ${playerId} to room ${roomId} in database`)
-        dbHelpers.addPlayer(playerId, roomId, socket.id, name, userProfile.id, userProfile.color_id, 0)
-      } else {
-        // Reconnecting player but no DB record - add them
-        console.log(`[SOCKET] Reconnecting player ${playerId} has no DB record, adding to room ${roomId}`)
-        dbHelpers.addPlayer(playerId, roomId, socket.id, name, userProfile.id, userProfile.color_id, 0)
+      
+      if (DEBUG_LOGGING) {
+        console.log('[DIAG] [SERVER] [JOIN-ROOM] Step B: Player added to room', {
+          roomId: roomId,
+          roomIdType: typeof roomId,
+          playersCount: room.players.size,
+          joiningUserProfileId: userProfile.id,
+          allPlayerKeys: Array.from(room.players.keys()),
+          allPlayers: Array.from(room.players.values()).map(p => ({ userProfileId: p.userProfileId, name: p.name })),
+          timestamp: Date.now()
+        })
       }
-    }
-    dbHelpers.addGameEvent(roomId, playerId, 'player_joined', { playerName: name, emoji: colorInfo?.emoji })
-    dbHelpers.updateRoomActivity(roomId)
-    
-    // Cancel countdown if one is running (new player joined, so not all players are ready)
-    if (room.countdownInterval) {
+      
+      // Check if this is the host reconnecting (by profile ID)
+      const isHostReconnecting = room.hostUserProfileId && 
+        userProfile.id && 
+        String(room.hostUserProfileId) === String(userProfile.id) &&
+        (!room.hostSocketId || !io.sockets.sockets.get(room.hostSocketId)?.connected)
+      
+      if (isHostReconnecting) {
+        console.log(`[SOCKET] Host reconnecting to room ${roomId} with new socket ${socket.id}`)
+        // Clear any reconnect timeout
+        if (room.hostReconnectTimeout) {
+          clearTimeout(room.hostReconnectTimeout)
+          room.hostReconnectTimeout = null
+          console.log(`[SOCKET] Cleared host reconnect timeout for room ${roomId}`)
+          addServerEventLog(`Host reconnected, cleared timeout for room ${roomId}`, 'info', { roomId, socketId: socket.id })
+        }
+        // Restore host socket ID
+        room.hostSocketId = socket.id
+        // Notify other players that host reconnected
+        io.to(roomId).emit('host-reconnected', {
+          message: 'Host has reconnected'
+        })
+        
+        // Emit canonical room snapshot after host reconnect
+        emitRoomSnapshot(room).catch(err => console.error('[EMIT-SNAPSHOT] Error:', err))
+      }
+      // Game events no longer persisted (match results saved to NoCodeBackend)
+      // dbHelpers.addGameEvent(roomId, playerId, 'player_joined', { playerName: name, emoji: finalEmoji })
+      // Room activity no longer persisted (rooms are in-memory only)
+      
+      // Cancel countdown if one is running (new player joined, so not all players are ready)
+      if (room.countdownInterval) {
       clearInterval(room.countdownInterval)
       room.countdownInterval = null
       room.countdownSeconds = null
       io.to(roomId).emit('countdown-cancelled', {})
       console.log(`[SOCKET] Cancelled countdown in room ${roomId} due to new player joining`)
-    }
-    
-    socket.join(roomId)
-    socket.leave('LOBBY')
-    
-    // Clean up any stale sockets in this room that aren't associated with active players
-    // Use in-memory room state as source of truth
-    const activeSocketIds = new Set(Array.from(room.socketIds.values()))
-    const roomSockets = Array.from(io.sockets.adapter.rooms.get(roomId) || [])
-    for (const socketIdInRoom of roomSockets) {
+      }
+      
+      socket.join(roomId)
+      socket.leave('LOBBY')
+      
+      // Clean up any stale sockets in this room that aren't associated with active players
+      // Use in-memory room state as source of truth
+      const activeSocketIds = new Set(Array.from(room.socketIds.values()))
+      const roomSockets = Array.from(io.sockets.adapter.rooms.get(roomId) || [])
+      for (const socketIdInRoom of roomSockets) {
       if (!activeSocketIds.has(socketIdInRoom)) {
         const staleSocket = io.sockets.sockets.get(socketIdInRoom)
         if (staleSocket) {
@@ -1021,17 +899,17 @@ io.on('connection', (socket) => {
           io.sockets.adapter.rooms.get(roomId)?.delete(socketIdInRoom)
           console.log(`[SOCKET] Cleaned up non-existent socket ${socketIdInRoom} from room ${roomId} adapter`)
         }
+        }
       }
-    }
-    
-    // Notify all players in the room
-    const playersArray = Array.from(room.players.values())
-    // Determine if the joining player is the host
-    const joiningPlayerIsHost = room.hostUserProfileId && 
+      
+      // Notify all players in the room
+      const playersArray = Array.from(room.players.values())
+      // Determine if the joining player is the host
+      const joiningPlayerIsHost = room.hostUserProfileId && 
       userProfile.id && 
       String(room.hostUserProfileId) === String(userProfile.id)
-    
-    if (DEBUG_LOGGING) {
+      
+      if (DEBUG_LOGGING) {
       console.log(`[DIAG] [SERVER] Creating playersArray for emit:`, {
         roomPlayersMapSize: room.players.size,
         playersArrayLength: playersArray.length,
@@ -1052,54 +930,56 @@ io.on('connection', (socket) => {
         playersCount: playersArray.length,
         timestamp: Date.now()
       })
-    }
-    
-    // Emit player-joined event to ALL sockets in the room (including host and joining player)
-    // This ensures the host sees the new player immediately
-    const playerJoinedData = {
-      players: playersArray,
-      gameState: room.gameState,
-      isHost: joiningPlayerIsHost, // Include host status for the joining player
-      hostUserProfileId: room.hostUserProfileId, // Include host profile ID so all clients know who the host is
-      selectedGame: room.gameState?.selectedGame || null
-    }
-    // Emit to all sockets in the room (including host) so host sees new player immediately
-    io.to(roomId).emit('player-joined', playerJoinedData)
-    
-    // Emit canonical room snapshot after any join
-    if (DEBUG_LOGGING) {
+      }
+      
+      // Emit player-joined event to ALL sockets in the room (including host and joining player)
+      // This ensures the host sees the new player immediately
+      const playerJoinedData = {
+        players: playersArray,
+        gameState: room.gameState,
+        isHost: joiningPlayerIsHost, // Include host status for the joining player
+        hostUserProfileId: room.hostUserProfileId, // Include host profile ID so all clients know who the host is
+        selectedGame: room.gameState?.selectedGame || null
+      }
+      // Emit to all sockets in the room (including host) so host sees new player immediately
+      io.to(roomId).emit('player-joined', playerJoinedData)
+      
+      // Emit canonical room snapshot after any join
+      if (DEBUG_LOGGING) {
       console.log(`[SOCKET] Broadcasted player-joined to all players in room ${roomId} (including host)`)
       console.log('[DIAG] [SERVER] [JOIN-ROOM] Step D: About to emit room-snapshot', {
-      roomId: room.id,
-      roomIdType: typeof room.id,
-      playersCount: room.players.size,
-      snapshotPayload: {
         roomId: room.id,
-        hostUserProfileId: room.hostUserProfileId,
-        playersCount: Array.from(room.players.values()).length
-      },
-      timestamp: Date.now()
-    })
-    
-    emitRoomSnapshot(room)
-    
-    // Broadcast room update to LOBBY (clients on room-join screen)
-    io.to('LOBBY').emit('room-list-updated', {
-      roomId,
-      action: 'updated',
-      room: {
-        id: roomId,
-        playerCount: room.players.size,
-        maxPlayers: 4,
-        state: room.gameState.state,
-        lastActivity: room.lastActivity || new Date().toISOString()
+        roomIdType: typeof room.id,
+        playersCount: room.players.size,
+        snapshotPayload: {
+          roomId: room.id,
+          hostUserProfileId: room.hostUserProfileId,
+          playersCount: Array.from(room.players.values()).length
+        },
+        timestamp: Date.now()
+      })
       }
-    })
-    
-    // Broadcast updated room list to LOBBY
-    broadcastRoomList()
-    
-      console.log(`Player ${socket.id} (${name}) joined room ${roomId} with emoji ${colorInfo?.emoji}`)
+      
+      // Await snapshot to ensure database refresh completes before emitting
+      await emitRoomSnapshot(room).catch(err => console.error('[EMIT-SNAPSHOT] Error:', err))
+      
+      // Broadcast room update to LOBBY (clients on room-join screen)
+      io.to('LOBBY').emit('room-list-updated', {
+        roomId,
+        action: 'updated',
+        room: {
+          id: roomId,
+          playerCount: room.players.size,
+          maxPlayers: 4,
+          state: room.gameState.state,
+          lastActivity: room.lastActivity || new Date().toISOString()
+        }
+      })
+      
+      // Broadcast updated room list to LOBBY
+      broadcastRoomList()
+      
+      console.log(`Player ${socket.id} (${name}) joined room ${roomId} with emoji ${finalEmoji}`)
     } catch (error) {
       console.error(`[SOCKET] Error in join-room handler:`, error)
       console.error(`[SOCKET] Error stack:`, error.stack)
@@ -1121,9 +1001,10 @@ io.on('connection', (socket) => {
       player.name = name
       
       // Update in database
-      db.prepare('UPDATE players SET name = ? WHERE id = ?').run(name, userProfileId)
-      dbHelpers.addGameEvent(roomId, userProfileId, 'player_name_updated', { playerName: name })
-      dbHelpers.updateRoomActivity(roomId)
+      // Player data stored in-memory only (no database persistence)
+      // Game events no longer persisted (match results saved to NoCodeBackend)
+      // dbHelpers.addGameEvent(roomId, userProfileId, 'player_name_updated', { playerName: name })
+      // Room activity no longer persisted (rooms are in-memory only)
       
       // Broadcast updated player list to all players in the room
       io.to(roomId).emit('player-name-updated', {
@@ -1142,8 +1023,7 @@ io.on('connection', (socket) => {
     if (!room) return
     
     // Log action to database
-    dbHelpers.addGameEvent(roomId, socket.id, 'player_action', { action })
-    dbHelpers.updateRoomActivity(roomId)
+    // Game events no longer persisted (match results saved to NoCodeBackend)
     
     // Broadcast action to all players in the room
     socket.to(roomId).emit('player-action', {
@@ -1183,8 +1063,7 @@ io.on('connection', (socket) => {
     }
     
     // Log to database
-    dbHelpers.addGameEvent(roomId, userProfileId, 'microgame_start', { gameType, round, gameData })
-    dbHelpers.updateRoomActivity(roomId)
+    // Game events no longer persisted (match results saved to NoCodeBackend)
     
     // Broadcast to all players in the room
     io.to(roomId).emit('microgame-start', {
@@ -1198,7 +1077,7 @@ io.on('connection', (socket) => {
     const room = rooms.get(roomId)
     if (!room) return
     
-    dbHelpers.updateRoomActivity(roomId)
+    // Room activity no longer persisted (rooms are in-memory only)
     io.to(roomId).emit('microgame-playing', {})
   })
 
@@ -1213,12 +1092,13 @@ io.on('connection', (socket) => {
       if (player) {
         player.score = (player.score || 0) + (roundScore || 0)
         // Update in database
-        db.prepare('UPDATE players SET score = ? WHERE id = ?').run(player.score, userProfileId)
-        dbHelpers.addGameEvent(roomId, userProfileId, 'microgame_end', { roundScore }, player.score)
+        // Player data stored in-memory only (no database persistence)
+        // Game events no longer persisted (match results saved to NoCodeBackend)
+      // dbHelpers.addGameEvent(roomId, userProfileId, 'microgame_end', { roundScore }, player.score)
       }
     }
     
-    dbHelpers.updateRoomActivity(roomId)
+    // Room activity no longer persisted (rooms are in-memory only)
     
     // Broadcast end event with round scores and total scores
     const totalScores = Object.fromEntries(
@@ -1239,8 +1119,7 @@ io.on('connection', (socket) => {
     if (!userProfileId) return
     
     // Log to database
-    dbHelpers.addGameEvent(roomId, userProfileId, 'game_action', { action, data })
-    dbHelpers.updateRoomActivity(roomId)
+    // Game events no longer persisted (match results saved to NoCodeBackend)
     
     // Broadcast action to all players
     socket.to(roomId).emit('game-action', {
@@ -1331,6 +1210,12 @@ io.on('connection', (socket) => {
     } else {
       console.log(`[SOCKET] Non-host socket ${socket.id} attempted to broadcast game state`)
     }
+  })
+
+  // Handle ping for latency measurement
+  socket.on('pong-ping', ({ timestamp }) => {
+    // Echo back the timestamp immediately for RTT calculation
+    socket.emit('pong-pong', { timestamp })
   })
 
   // Handle Memory game events
@@ -1664,10 +1549,9 @@ io.on('connection', (socket) => {
     
     // Update database
     if (gameState.state) {
-      dbHelpers.updateRoomState(roomId, gameState.state)
+      // Room state stored in-memory only (no database persistence)
     }
-    dbHelpers.addGameEvent(roomId, userProfileId, 'game_state_update', { state: gameState.state })
-    dbHelpers.updateRoomActivity(roomId)
+    // Game events no longer persisted (match results saved to NoCodeBackend)
     
     // Broadcast to all other players
     socket.to(roomId).emit('game-state-update', gameState)
@@ -1736,8 +1620,7 @@ io.on('connection', (socket) => {
     }
     
     // Log the game selection
-    dbHelpers.addGameEvent(roomId, userProfileId, 'game_selected', { game })
-    dbHelpers.updateRoomActivity(roomId)
+    // Game events no longer persisted (match results saved to NoCodeBackend)
     
     // Broadcast to all other players with ready status reset
     // Use room.id instead of roomId parameter to ensure correct room format
@@ -1752,7 +1635,7 @@ io.on('connection', (socket) => {
     console.log(`[SOCKET] Host selected game: ${game} in room ${room.id}`)
     
     // Emit canonical room snapshot after game selection
-    emitRoomSnapshot(room)
+    emitRoomSnapshot(room).catch(err => console.error('[EMIT-SNAPSHOT] Error:', err))
   })
 
   // Handle player ready/unready
@@ -1773,7 +1656,7 @@ io.on('connection', (socket) => {
     
     // Emit room snapshot to refresh client state
     console.log(`[SOCKET] Room snapshot refresh requested for room ${roomId} by ${socket.id}`)
-    emitRoomSnapshot(room)
+    emitRoomSnapshot(room).catch(err => console.error('[EMIT-SNAPSHOT] Error:', err))
   })
 
   socket.on('player-ready', ({ roomId, ready }) => {
@@ -1804,11 +1687,13 @@ io.on('connection', (socket) => {
         room.readyPlayers = new Set()
       }
       room.readyPlayers.add(userProfileId)
-      dbHelpers.addGameEvent(roomId, userProfileId, 'player_ready', {})
+      // Game events no longer persisted (match results saved to NoCodeBackend)
+      // dbHelpers.addGameEvent(roomId, userProfileId, 'player_ready', {})
     } else {
       // Use optional chaining to safely delete
       room.readyPlayers?.delete(userProfileId)
-      dbHelpers.addGameEvent(roomId, userProfileId, 'player_unready', {})
+      // Game events no longer persisted (match results saved to NoCodeBackend)
+      // dbHelpers.addGameEvent(roomId, userProfileId, 'player_unready', {})
       
       // Cancel countdown if player unreadies
       if (room.countdownInterval) {
@@ -1819,7 +1704,7 @@ io.on('connection', (socket) => {
       }
     }
     
-    dbHelpers.updateRoomActivity(roomId)
+    // Room activity no longer persisted (rooms are in-memory only)
     
     // Broadcast updated ready status to all players
     const playersArray = Array.from(room.players.values())
@@ -1830,7 +1715,7 @@ io.on('connection', (socket) => {
     })
     
     // Emit canonical room snapshot after ready status change
-    emitRoomSnapshot(room)
+    emitRoomSnapshot(room).catch(err => console.error('[EMIT-SNAPSHOT] Error:', err))
     
     console.log(`[SOCKET] Player ${socket.id} ${ready ? 'readied' : 'unreadied'} in room ${roomId}. Ready: ${room.readyPlayers.size}/${room.players.size}`)
     
@@ -1894,8 +1779,8 @@ io.on('connection', (socket) => {
     }
     
     // Start the game for all players
-    dbHelpers.addGameEvent(roomId, null, 'game_started', { game: selectedGame })
-    dbHelpers.updateRoomState(roomId, 'playing')
+    // Game events no longer persisted (match results saved to NoCodeBackend)
+    // Room state stored in-memory only (no database persistence)
     
     // Update in-memory room gameState to 'playing'
     if (!room.gameState) {
@@ -1904,7 +1789,7 @@ io.on('connection', (socket) => {
     room.gameState.state = 'playing'
     
     // Emit room snapshot with updated status
-    emitRoomSnapshot(room)
+    emitRoomSnapshot(room).catch(err => console.error('[EMIT-SNAPSHOT] Error:', err))
     
     io.to(roomId).emit('game-start', { game: selectedGame })
     console.log(`[SOCKET] Game ${selectedGame} started in room ${roomId} by host`)
@@ -2017,7 +1902,7 @@ io.on('connection', (socket) => {
       console.log(`[SOCKET] New player order:`, Array.from(room.players.keys()).map((id, idx) => `${idx}: ${id}`).join(', '))
       
       // Emit updated room snapshot
-      emitRoomSnapshot(room)
+      emitRoomSnapshot(room).catch(err => console.error('[EMIT-SNAPSHOT] Error:', err))
       
       // Notify all players of rotation
       io.to(roomId).emit('players-rotated', {
@@ -2032,7 +1917,7 @@ io.on('connection', (socket) => {
         playerData.ready = false
       }
       
-      emitRoomSnapshot(room)
+      emitRoomSnapshot(room).catch(err => console.error('[EMIT-SNAPSHOT] Error:', err))
     }
   })
 
@@ -2052,7 +1937,7 @@ io.on('connection', (socket) => {
     
     // Note: Position updates are too frequent to log every one
     // Only update activity timestamp periodically
-    dbHelpers.updateRoomActivity(roomId)
+    // Room activity no longer persisted (rooms are in-memory only)
     
     // Broadcast to all other players
     socket.to(roomId).emit('player-position', {
@@ -2074,11 +1959,12 @@ io.on('connection', (socket) => {
     if (player) {
       player.score = score
       // Update in database
-      db.prepare('UPDATE players SET score = ? WHERE id = ?').run(score, userProfileId)
-      dbHelpers.addGameEvent(roomId, userProfileId, 'score_update', null, score)
+      // Player data stored in-memory only (no database persistence)
+      // Game events no longer persisted (match results saved to NoCodeBackend)
+      // dbHelpers.addGameEvent(roomId, userProfileId, 'score_update', null, score)
     }
     
-    dbHelpers.updateRoomActivity(roomId)
+    // Room activity no longer persisted (rooms are in-memory only)
     
     // Broadcast to all players
     io.to(roomId).emit('score-update', {
@@ -2091,169 +1977,13 @@ io.on('connection', (socket) => {
   const handlePlayerLeave = (socket, roomId, reason = 'explicit_leave', isDisconnected = false) => {
     const room = rooms.get(roomId)
     
-    // If room not in memory, try to load it from database
+    // If room not in memory, it doesn't exist (rooms are ephemeral)
     if (!room) {
-      console.log(`[${reason.toUpperCase()}] Room ${roomId} not in memory, checking database`)
-      const dbRoom = dbHelpers.getRoom(roomId)
-      if (!dbRoom || dbRoom.state === 'ended') {
-        console.log(`[${reason.toUpperCase()}] Room ${roomId} not found or already ended`)
-        if (!isDisconnected && socket.connected) {
-          socket.emit('room-error', { message: 'Room not found or already closed' })
-        }
-        return false
+      console.log(`[${reason.toUpperCase()}] Room ${roomId} not found (rooms are in-memory only)`)
+      if (!isDisconnected && socket.connected) {
+        socket.emit('room-error', { message: 'Room not found. Rooms are only active while players are connected.' })
       }
-      
-      // Load room from database
-      const dbPlayers = dbHelpers.getPlayersByRoom(roomId)
-      const activePlayers = dbPlayers.filter(p => !p.left_at)
-      
-      if (activePlayers.length === 0) {
-        console.log(`[SOCKET] Room ${roomId} has no active players`)
-        dbHelpers.updateRoomState(roomId, 'ended')
-        invalidateEndedRoomsCache(roomId)
-        socket.emit('room-error', { message: 'Room has no active players' })
-        return
-      }
-      
-      // Find the first player (host) by joined_at timestamp
-      const firstPlayer = activePlayers.sort((a, b) => 
-        new Date(a.joined_at || 0) - new Date(b.joined_at || 0)
-      )[0]
-      
-      // Check if the leaving player is the host
-      const leavingPlayer = activePlayers.find(p => p.socket_id === socket.id)
-      if (!leavingPlayer) {
-        console.log(`[${reason.toUpperCase()}] Player ${socket.id} not found in room ${roomId}`)
-        if (!isDisconnected && socket.connected) {
-          socket.emit('room-error', { message: 'You are not in this room' })
-        }
-        return false
-      }
-      
-      const isHost = leavingPlayer.socket_id === firstPlayer.socket_id
-      
-      if (isHost) {
-        console.log(`[${reason.toUpperCase()}] Host ${socket.id} is leaving room ${roomId} - closing room (loaded from DB)`)
-        
-        // Get all socket IDs from database
-        const allSocketIds = new Set(activePlayers.map(p => p.socket_id).filter(Boolean))
-        console.log(`[${reason.toUpperCase()}] Emitting room-closed to room ${roomId} (${allSocketIds.size} players from DB)`)
-        
-        // First, emit to the room
-        io.to(roomId).emit('room-closed', {
-          reason: 'host_left',
-          message: 'Room closed by host'
-        })
-        
-        // Also emit directly to each socket ID from database
-        for (const socketId of allSocketIds) {
-          if (socketId !== socket.id) {
-            const targetSocket = io.sockets.sockets.get(socketId)
-            if (targetSocket && targetSocket.connected) {
-              console.log(`[${reason.toUpperCase()}] Emitting room-closed to socket ${socketId} from DB`)
-              targetSocket.emit('room-closed', {
-                reason: 'host_left',
-                message: 'Room closed by host'
-              })
-            }
-          }
-        }
-        
-        // Mark all players as left
-        const result = dbHelpers.removeAllPlayersFromRoom(roomId)
-        console.log(`[${reason.toUpperCase()}] Marked ${result.changes} player(s) as left in room ${roomId}`)
-        
-        // Update room state
-        dbHelpers.updateRoomState(roomId, 'ended')
-        invalidateEndedRoomsCache(roomId)
-        
-        // Broadcast room deletion to LOBBY and all connected sockets
-        // (players in rooms have left LOBBY, so we need to broadcast to everyone)
-        const roomListUpdate = {
-          roomId,
-          action: 'deleted'
-        }
-        io.to('LOBBY').emit('room-list-updated', roomListUpdate)
-        io.emit('room-list-updated', roomListUpdate) // Also broadcast to all sockets
-        // Also broadcast updated room list to all sockets (for Menu.jsx which listens for 'room-list')
-        broadcastRoomList()
-        
-        if (!isDisconnected) {
-          socket.leave(roomId)
-          // Rejoin LOBBY to receive room list updates
-          socket.join('LOBBY')
-        }
-        return true
-      } else {
-        // Regular player leaving - just mark as left
-        dbHelpers.removePlayer(socket.id)
-        dbHelpers.addGameEvent(roomId, socket.id, 'player_left', null)
-        dbHelpers.updateRoomActivity(roomId)
-        
-        // Get remaining players for broadcast
-        const remainingPlayers = activePlayers.filter(p => p.socket_id !== socket.id)
-        
-        // Broadcast player-left event to remaining players in the room
-        io.to(roomId).emit('player-left', {
-          userProfileId: leavingPlayer.user_profile_id,
-          players: remainingPlayers.map(p => ({
-            userProfileId: p.user_profile_id,
-            socketId: p.socket_id,
-            name: p.name || 'Unknown',
-            score: 0,
-            ready: false,
-            color: p.color || '#FFFFFF',
-            emoji: p.emoji || '👤',
-            colorId: p.color_id || 0
-          })),
-          roomId: roomId
-        })
-        
-        // CRITICAL: Emit room-snapshot to update UI for remaining players
-        // Load room into memory temporarily to emit snapshot, or construct snapshot from DB data
-        const snapshot = {
-          roomId: roomId,
-          hostUserProfileId: firstPlayer.user_profile_id,
-          status: dbRoom.state || 'waiting',
-          selectedGame: null,
-          players: remainingPlayers.map(p => ({
-            userProfileId: p.user_profile_id,
-            socketId: p.socket_id,
-            name: p.name || 'Unknown',
-            score: 0,
-            ready: false,
-            color: p.color || '#FFFFFF',
-            emoji: p.emoji || '👤',
-            colorId: p.color_id || 0,
-            profileName: p.name || 'Unknown',
-            profileCreatedAt: p.joined_at || new Date().toISOString(),
-            profileLastSeen: p.last_activity || new Date().toISOString()
-          }))
-        }
-        io.to(roomId).emit('room-snapshot', snapshot)
-        console.log(`[${reason.toUpperCase()}] Emitted room-snapshot for room ${roomId} loaded from DB (non-host leave)`)
-        addServerEventLog(`Emitted room-snapshot for room ${roomId} loaded from DB after player leave`, 'info', { roomId, remainingPlayerCount: remainingPlayers.length, leavingUserProfileId: leavingPlayer.user_profile_id, reason })
-        
-        if (!isDisconnected) {
-          socket.leave(roomId)
-          // Rejoin LOBBY to receive room list updates
-          socket.join('LOBBY')
-        }
-        
-        // Broadcast room update to LOBBY
-        io.to('LOBBY').emit('room-list-updated', {
-          roomId,
-          action: 'updated',
-          room: {
-            id: roomId,
-            playerCount: remainingPlayers.length,
-            maxPlayers: 4,
-            state: dbRoom.state || 'waiting',
-            lastActivity: dbRoom.last_activity || new Date().toISOString()
-          }
-        })
-        return true
-      }
+      return false
     }
     
     // Room is in memory - find player by socket ID
@@ -2264,6 +1994,14 @@ io.on('connection', (socket) => {
     }
     
     const leavingPlayer = room.players.get(userProfileId)
+    if (!leavingPlayer) {
+      console.log(`[${reason.toUpperCase()}] Player ${socket.id} not found in room ${roomId}`)
+      if (!isDisconnected && socket.connected) {
+        socket.emit('room-error', { message: 'You are not in this room' })
+      }
+      return false
+    }
+    
     // Check if player is host by profile ID (persistent)
     const isHost = leavingPlayer && room.hostUserProfileId && 
       String(leavingPlayer.userProfileId) === String(room.hostUserProfileId)
@@ -2295,7 +2033,7 @@ io.on('connection', (socket) => {
       })
       
       // Emit canonical room snapshot AFTER removing player from Map (so snapshot is correct)
-      emitRoomSnapshot(room)
+      emitRoomSnapshot(room).catch(err => console.error('[EMIT-SNAPSHOT] Error:', err))
       
       // Remove from Socket.IO room namespace
       if (!isDisconnected) {
@@ -2305,9 +2043,10 @@ io.on('connection', (socket) => {
       }
       
       // Update database (mark player as left by userProfileId)
-      db.prepare('UPDATE players SET left_at = CURRENT_TIMESTAMP WHERE id = ? AND room_id = ?').run(userProfileId, roomId)
-      dbHelpers.addGameEvent(roomId, userProfileId, 'player_left', { reason: 'host_left_but_room_stays_open' })
-      dbHelpers.updateRoomActivity(roomId)
+      // Player data stored in-memory only (no database persistence)
+      // Game events no longer persisted (match results saved to NoCodeBackend)
+      // dbHelpers.addGameEvent(roomId, userProfileId, 'player_left', { reason: 'host_left_but_room_stays_open' })
+      // Room activity no longer persisted (rooms are in-memory only)
       
       // Broadcast room update to LOBBY
       io.to('LOBBY').emit('room-list-updated', {
@@ -2389,7 +2128,7 @@ io.on('connection', (socket) => {
     if (DEBUG_LOGGING) {
       console.log(`[DEBUG] [${reason.toUpperCase()}] About to emit room-snapshot for room ${roomId} with ${snapshotPlayerCount} players in room Map`)
     }
-    emitRoomSnapshot(room)
+    emitRoomSnapshot(room).catch(err => console.error('[EMIT-SNAPSHOT] Error:', err))
     addServerEventLog(`Emitted room-snapshot to room ${roomId} after player leave`, 'info', { roomId, remainingPlayerCount: room.players.size, leavingUserProfileId: userProfileId, reason })
     
     // DEBUG: Check which sockets are still in the room after emitting
@@ -2432,9 +2171,9 @@ io.on('connection', (socket) => {
     }
     
     // Step 6: Update database - mark player as left by userProfileId
-    db.prepare('UPDATE players SET left_at = CURRENT_TIMESTAMP WHERE id = ? AND room_id = ?').run(userProfileId, roomId)
-    dbHelpers.addGameEvent(roomId, userProfileId, 'player_left', null)
-    dbHelpers.updateRoomActivity(roomId)
+    // Player data stored in-memory only (no database persistence)
+    // Game events no longer persisted (match results saved to NoCodeBackend)
+    // Room activity no longer persisted (rooms are in-memory only)
     console.log(`[${reason.toUpperCase()}] Marked player ${userProfileId} (socket ${socket.id}) as left in database for room ${roomId}`)
     addServerEventLog(`Marked player ${userProfileId} as left in database for room ${roomId}`, 'info', { socketId: socket.id, userProfileId, roomId, reason })
     
@@ -2464,7 +2203,7 @@ io.on('connection', (socket) => {
     // Broadcast room update or deletion to all connected clients
     if (room.players.size === 0) {
       rooms.delete(roomId)
-      dbHelpers.updateRoomState(roomId, 'ended')
+      // Room state stored in-memory only (no database persistence)
       invalidateEndedRoomsCache(roomId)
       console.log(`[${reason.toUpperCase()}] Room ${roomId} deleted (empty)`)
       
@@ -2564,13 +2303,14 @@ io.on('connection', (socket) => {
       
       // CRITICAL: Emit room-snapshot to all remaining players in the room
       // This ensures UI updates immediately
-      emitRoomSnapshot(room)
+      emitRoomSnapshot(room).catch(err => console.error('[EMIT-SNAPSHOT] Error:', err))
       console.log(`[SOCKET] Emitted room-snapshot after kicking player ${targetUserProfileId} from room ${roomId}`)
       
       // Update database
-      db.prepare('UPDATE players SET left_at = CURRENT_TIMESTAMP WHERE id = ? AND room_id = ?').run(targetUserProfileId, roomId)
-      dbHelpers.addGameEvent(roomId, targetUserProfileId, 'player_kicked', { kickedBy: requesterUserProfileId })
-      dbHelpers.updateRoomActivity(roomId)
+      // Player data stored in-memory only (no database persistence)
+      // Game events no longer persisted (match results saved to NoCodeBackend)
+      // dbHelpers.addGameEvent(roomId, targetUserProfileId, 'player_kicked', { kickedBy: requesterUserProfileId })
+      // Room activity no longer persisted (rooms are in-memory only)
       
       // Broadcast room update to LOBBY
       io.to('LOBBY').emit('room-list-updated', {
@@ -2652,20 +2392,22 @@ io.on('connection', (socket) => {
       addServerEventLog(`User count updated after disconnect: ${count} total users`, 'info', { count })
     })
     
-    // ALWAYS clean up database records for this socket, even if not in in-memory room
-    // This handles cases where socket disconnected before properly joining, or race conditions
-    // Find player by socket_id and mark as left
-    const dbPlayer = db.prepare('SELECT * FROM players WHERE socket_id = ? AND left_at IS NULL').get(socket.id)
-    if (dbPlayer) {
-      console.log(`[DISCONNECT] Cleaning up database record for disconnected socket ${socket.id} in room ${dbPlayer.room_id}`)
-      addServerEventLog(`Cleaning up database record for disconnected socket ${socket.id}`, 'info', { socketId: socket.id, roomId: dbPlayer.room_id })
-      // Mark as left by player ID (userProfileId)
-      db.prepare('UPDATE players SET left_at = CURRENT_TIMESTAMP WHERE id = ? AND room_id = ?').run(dbPlayer.id, dbPlayer.room_id)
-      dbHelpers.addGameEvent(dbPlayer.room_id, dbPlayer.id, 'player_left', null)
-      dbHelpers.updateRoomActivity(dbPlayer.room_id)
-      
-      // Also remove from Socket.IO room namespace if still there
-      const roomId = dbPlayer.room_id
+    // Clean up socket from any rooms it might be in (in-memory only)
+    // Find which room this socket is in by checking all rooms
+    let roomId = null
+    for (const [rId, room] of rooms.entries()) {
+      for (const [userProfileId, player] of room.players.entries()) {
+        if (player.socketId === socket.id) {
+          roomId = rId
+          break
+        }
+      }
+      if (roomId) break
+    }
+    
+    if (roomId) {
+      console.log(`[DISCONNECT] Cleaning up disconnected socket ${socket.id} from room ${roomId}`)
+      addServerEventLog(`Cleaning up disconnected socket ${socket.id}`, 'info', { socketId: socket.id, roomId })
       if (io.sockets.adapter.rooms.has(roomId)) {
         const roomAdapter = io.sockets.adapter.rooms.get(roomId)
         if (roomAdapter) {
@@ -2768,12 +2510,13 @@ io.on('connection', (socket) => {
           
           // CRITICAL: Emit room-snapshot to all remaining players in the room
           // This ensures UI updates immediately when host disconnects
-          emitRoomSnapshot(room)
+          emitRoomSnapshot(room).catch(err => console.error('[EMIT-SNAPSHOT] Error:', err))
           console.log(`[DISCONNECT] Emitted room-snapshot after host ${userProfileId} disconnected from room ${roomId}`)
           
           // Mark player as left in DB by userProfileId (host will reconnect with new socket)
-          db.prepare('UPDATE players SET left_at = CURRENT_TIMESTAMP WHERE id = ? AND room_id = ?').run(userProfileId, roomId)
-          dbHelpers.addGameEvent(roomId, userProfileId, 'player_left', null)
+          // Player data stored in-memory only (no database persistence)
+          // Game events no longer persisted (match results saved to NoCodeBackend)
+      // dbHelpers.addGameEvent(roomId, userProfileId, 'player_left', null)
           console.log(`[DISCONNECT] Marked host ${userProfileId} (socket ${socket.id}) as left in database`)
           addServerEventLog(`Marked host ${userProfileId} as left in database`, 'info', { socketId: socket.id, userProfileId, roomId })
           
@@ -2793,12 +2536,10 @@ io.on('connection', (socket) => {
                 message: 'Room closed: Host did not reconnect within 60 seconds'
               })
               
-              // Mark all players as left
-              const result = dbHelpers.removeAllPlayersFromRoom(roomId)
-              console.log(`[DISCONNECT] Marked ${result.changes} player(s) as left in room ${roomId}`)
+              // Players removed from in-memory room (no database persistence)
+              console.log(`[DISCONNECT] Removed all players from room ${roomId}`)
               
-              // Update room state
-              dbHelpers.updateRoomState(roomId, 'ended')
+              // Room state stored in-memory only (no database persistence)
               invalidateEndedRoomsCache(roomId)
               
               // Delete from memory
@@ -2919,34 +2660,16 @@ app.get('/api/rooms/active', (req, res) => {
   try {
     // Get active rooms from in-memory Map (real-time data)
     // Get ended room IDs from cache (refresh if stale)
-    const now = Date.now()
-    if (now - endedRoomIdsCacheTime > ENDED_ROOMS_CACHE_TTL || endedRoomIdsCache.size === 0) {
-      const endedRoomsQuery = db.prepare(`SELECT id FROM rooms WHERE state = 'ended'`).all()
-      endedRoomIdsCache = new Set(endedRoomsQuery.map(r => r.id))
-      endedRoomIdsCacheTime = now
-      if (DEBUG_LOGGING && endedRoomIdsCache.size > 0) {
-        console.log(`[API] Refreshed ended rooms cache: ${endedRoomIdsCache.size} ended rooms`)
-      }
-    }
-    
-    // Only check ended status for rooms that are actually in memory
-    // This avoids querying the database for every room
-    const memoryRoomIds = Array.from(rooms.keys())
-    const endedMemoryRoomIds = memoryRoomIds.length > 0 
-      ? new Set(db.prepare(`SELECT id FROM rooms WHERE state = 'ended' AND id IN (${memoryRoomIds.map(() => '?').join(',')})`).all(...memoryRoomIds).map(r => r.id))
-      : new Set()
-    
+    // Rooms are in-memory only - filter active rooms directly
     const memoryRooms = Array.from(rooms.entries())
       .filter(([roomId, room]) => {
-        // Filter out ended rooms (check both cache and specific query for memory rooms)
-        if (endedRoomIdsCache.has(roomId) || endedMemoryRoomIds.has(roomId)) {
+        // Filter out ended rooms (check cache)
+        if (endedRoomIdsCache.has(roomId)) {
           if (DEBUG_LOGGING) {
             console.log(`[API] Filtering out ended room from memory: ${roomId}`)
           }
           // Also remove from in-memory Map if it's marked as ended
           rooms.delete(roomId)
-          // Update cache immediately
-          endedRoomIdsCache.add(roomId)
           return false
         }
         const gameState = room.gameState?.state || 'waiting'
@@ -2961,34 +2684,8 @@ app.get('/api/rooms/active', (req, res) => {
         source: 'memory'
       }))
     
-    // Also get active rooms from database (rooms with active players)
-    const dbRooms = db.prepare(`
-      SELECT 
-        r.id,
-        r.state,
-        r.last_activity,
-        COUNT(p.id) as player_count
-      FROM rooms r
-      LEFT JOIN players p ON r.id = p.room_id AND p.left_at IS NULL
-      WHERE r.state IN ('waiting', 'playing')
-      GROUP BY r.id
-      HAVING player_count > 0 AND player_count < 4
-      ORDER BY player_count DESC, r.last_activity DESC
-    `).all()
-    
-    const dbRoomsFormatted = dbRooms.map(room => ({
-      id: room.id,
-      playerCount: room.player_count || 0,
-      maxPlayers: 4,
-      state: room.state || 'waiting',
-      lastActivity: room.last_activity || new Date().toISOString(),
-      source: 'database'
-    }))
-    
-    // Combine both sources, prioritizing memory rooms (they're more up-to-date)
-    const memoryRoomIdsSet = new Set(memoryRooms.map(r => r.id))
-    const uniqueDbRooms = dbRoomsFormatted.filter(r => !memoryRoomIdsSet.has(r.id))
-    const allActiveRooms = [...memoryRooms, ...uniqueDbRooms]
+    // Rooms are in-memory only - no database queries needed
+    const allActiveRooms = memoryRooms
       .sort((a, b) => b.playerCount - a.playerCount) // Sort by player count (most players first)
     
     if (DEBUG_LOGGING) {
@@ -3003,8 +2700,15 @@ app.get('/api/rooms/active', (req, res) => {
 
 app.get('/api/rooms', (req, res) => {
   try {
-    const rooms = dbHelpers.getAllRoomStats()
-    res.json(rooms)
+    // Get all in-memory rooms
+    const roomList = Array.from(rooms.values()).map(room => ({
+      id: room.id,
+      state: room.gameState?.state || 'waiting',
+      playerCount: room.players.size,
+      hostUserProfileId: room.hostUserProfileId,
+      lastActivity: room.lastActivity
+    }))
+    res.json(roomList)
   } catch (error) {
     res.status(500).json({ error: error.message })
   }
@@ -3018,12 +2722,18 @@ app.get('/api/rooms/:roomId', (req, res) => {
       console.error('[ERROR] /api/rooms/active was matched by /api/rooms/:roomId route! Route order is wrong!')
       return res.status(404).json({ error: 'Route conflict: /api/rooms/active should be handled by specific route' })
     }
-    const room = dbHelpers.getRoomStats(roomId)
+    // Get room from in-memory storage
+    const room = rooms.get(roomId)
     if (!room) {
       return res.status(404).json({ error: 'Room not found' })
     }
-    const players = dbHelpers.getPlayersByRoom(roomId)
-    res.json({ ...room, players })
+    const players = Array.from(room.players.values())
+    res.json({
+      id: room.id,
+      state: room.gameState?.state || 'waiting',
+      playerCount: players.length,
+      players
+    })
   } catch (error) {
     res.status(500).json({ error: error.message })
   }
@@ -3032,7 +2742,11 @@ app.get('/api/rooms/:roomId', (req, res) => {
 app.get('/api/rooms/:roomId/players', (req, res) => {
   try {
     const { roomId } = req.params
-    const players = dbHelpers.getPlayersByRoom(roomId)
+    const room = rooms.get(roomId)
+    if (!room) {
+      return res.status(404).json({ error: 'Room not found' })
+    }
+    const players = Array.from(room.players.values())
     res.json(players)
   } catch (error) {
     res.status(500).json({ error: error.message })
@@ -3053,13 +2767,35 @@ app.post('/api/rooms/create', async (req, res) => {
     
     console.log(`[API] Creating room ${roomId} for player (${name}) via REST API`)
     
-    // Get or create user profile and assign emoji
-    const userProfile = dbHelpers.getOrCreateUserProfile(name, userProfileId, colorId)
-    const colorInfo = dbHelpers.getPlayerColorById(userProfile.color_id)
+    // Get user profile from NoCodeBackend
+    if (!userProfileId) {
+      return res.status(400).json({ error: 'userProfileId is required' })
+    }
     
-    // Create room in database with host user profile ID
-    dbHelpers.createRoom(roomId, 'waiting', userProfile.id)
-    dbHelpers.addGameEvent(roomId, null, 'room_created', { roomId })
+    let userProfile = null
+    try {
+      userProfile = await getProfile(userProfileId)
+    } catch (error) {
+      console.error(`[API] Error fetching profile ${userProfileId}:`, error)
+    }
+    
+    if (!userProfile) {
+      return res.status(404).json({ error: 'User profile not found. Please create a profile first.' })
+    }
+    
+    // ALWAYS use emoji and color from NoCodeBackend database - NO FALLBACKS
+    // Ignore client-sent values completely
+    // Handle both camelCase and PascalCase field names from API
+    const finalEmoji = (userProfile.emoji !== null && userProfile.emoji !== undefined)
+      ? userProfile.emoji
+      : ((userProfile.Emoji !== null && userProfile.Emoji !== undefined)
+        ? userProfile.Emoji
+        : '⚪')
+    const finalColor = (userProfile.color !== null && userProfile.color !== undefined)
+      ? userProfile.color
+      : ((userProfile.Color !== null && userProfile.Color !== undefined)
+        ? userProfile.Color
+        : '#FFFFFF')
     
     // Create in-memory room structure (but without socket connection yet)
     // The socket will connect later and join this room
@@ -3103,8 +2839,8 @@ app.post('/api/rooms/create', async (req, res) => {
       roomId,
       hostUserProfileId: userProfile.id,
       playerName: name,
-      color: colorInfo?.color || '#FFFFFF',
-      emoji: colorInfo?.emoji || '⚪',
+      color: finalColor,
+      emoji: finalEmoji,
       message: 'Room created successfully. Connect via Socket.IO to join.'
     })
   } catch (error) {
@@ -3115,10 +2851,8 @@ app.post('/api/rooms/create', async (req, res) => {
 
 app.get('/api/rooms/:roomId/history', (req, res) => {
   try {
-    const { roomId } = req.params
-    const limit = parseInt(req.query.limit) || 100
-    const history = dbHelpers.getGameHistory(roomId, limit)
-    res.json(history)
+    // Game history no longer persisted (match results saved to NoCodeBackend)
+    res.json([])
   } catch (error) {
     res.status(500).json({ error: error.message })
   }
@@ -3126,9 +2860,8 @@ app.get('/api/rooms/:roomId/history', (req, res) => {
 
 app.get('/api/history', (req, res) => {
   try {
-    const limit = parseInt(req.query.limit) || 100
-    const history = dbHelpers.getAllGameHistory(limit)
-    res.json(history)
+    // Game history no longer persisted (match results saved to NoCodeBackend)
+    res.json([])
   } catch (error) {
     res.status(500).json({ error: error.message })
   }
@@ -3136,26 +2869,28 @@ app.get('/api/history', (req, res) => {
 
 app.get('/api/stats', (req, res) => {
   try {
-    const allRooms = dbHelpers.getAllRoomStats()
-    const allHistory = dbHelpers.getAllGameHistory(1000)
+    // Get stats from in-memory rooms only
+    const allRooms = Array.from(rooms.values())
+    let totalPlayers = 0
+    for (const room of allRooms) {
+      totalPlayers += room.players.size
+    }
     
     const stats = {
       totalRooms: allRooms.length,
-      activeRooms: allRooms.filter(r => r.state !== 'ended').length,
-      totalPlayers: allRooms.reduce((sum, r) => sum + (r.player_count || 0), 0),
-      totalEvents: allHistory.length,
+      activeRooms: allRooms.length, // All in-memory rooms are active
+      totalPlayers: totalPlayers,
+      totalEvents: 0, // Game events no longer persisted
       eventTypes: {},
-      recentRooms: allRooms.slice(0, 10),
-      topScores: allRooms
-        .filter(r => r.max_score > 0)
-        .sort((a, b) => (b.max_score || 0) - (a.max_score || 0))
-        .slice(0, 10)
+      recentRooms: allRooms.slice(0, 10).map(r => ({
+        id: r.id,
+        playerCount: r.players.size,
+        state: r.gameState?.state || 'waiting'
+      })),
+      topScores: [] // Scores no longer persisted
     }
     
-    // Count event types
-    allHistory.forEach(event => {
-      stats.eventTypes[event.event_type] = (stats.eventTypes[event.event_type] || 0) + 1
-    })
+    // Event types no longer tracked (game events not persisted)
     
     res.json(stats)
   } catch (error) {
@@ -3165,25 +2900,8 @@ app.get('/api/stats', (req, res) => {
 
 app.get('/api/tables', (req, res) => {
   try {
-    const tables = db.prepare(`
-      SELECT name, sql 
-      FROM sqlite_master 
-      WHERE type='table' AND name NOT LIKE 'sqlite_%'
-      ORDER BY name
-    `).all()
-    
-    const tableInfo = tables.map(table => {
-      const columns = db.prepare(`PRAGMA table_info(${table.name})`).all()
-      const rowCount = db.prepare(`SELECT COUNT(*) as count FROM ${table.name}`).get()
-      return {
-        name: table.name,
-        sql: table.sql,
-        columns: columns,
-        rowCount: rowCount.count
-      }
-    })
-    
-    res.json(tableInfo)
+    // Database tables no longer exist - using NoCodeBackend and in-memory storage
+    res.json([])
   } catch (error) {
     res.status(500).json({ error: error.message })
   }
@@ -3191,8 +2909,9 @@ app.get('/api/tables', (req, res) => {
 
 app.get('/api/player-colors', (req, res) => {
   try {
-    const colors = dbHelpers.getAllPlayerColors()
-    res.json(colors)
+    // Player colors are handled client-side (see src/utils/playerColors.js)
+    // Return empty array - colors are assigned client-side from NoCodeBackend profiles
+    res.json([])
   } catch (error) {
     res.status(500).json({ error: error.message })
   }
@@ -3200,15 +2919,8 @@ app.get('/api/player-colors', (req, res) => {
 
 app.get('/api/player-colors/:index', (req, res) => {
   try {
-    const index = parseInt(req.params.index)
-    if (isNaN(index) || index < 0) {
-      return res.status(400).json({ error: 'Invalid index' })
-    }
-    const color = dbHelpers.getPlayerColorByIndex(index)
-    if (!color) {
-      return res.status(404).json({ error: 'Color not found' })
-    }
-    res.json(color)
+    // Player colors are handled client-side (see src/utils/playerColors.js)
+    res.status(404).json({ error: 'Color not found. Colors are assigned client-side.' })
   } catch (error) {
     res.status(500).json({ error: error.message })
   }
@@ -3216,24 +2928,21 @@ app.get('/api/player-colors/:index', (req, res) => {
 
 app.get('/api/players', (req, res) => {
   try {
-    const allRooms = dbHelpers.getAllRooms()
+    // Get all players from in-memory rooms
     const allPlayers = []
     
-    for (const room of allRooms) {
-      const players = dbHelpers.getPlayersByRoom(room.id)
-      players.forEach((player) => {
+    for (const room of rooms.values()) {
+      for (const player of room.players.values()) {
         allPlayers.push({
-          id: player.id,
+          id: player.userProfileId,
           name: player.name,
           roomId: room.id,
-          roomState: room.state,
-          score: player.score,
+          roomState: room.gameState?.state || 'waiting',
+          score: player.score || 0,
           emoji: player.emoji || '⚪',
-          color: player.color || '#FFFFFF',
-          colorName: player.color_name || 'Unknown',
-          joinedAt: player.joined_at
+          color: player.color || '#FFFFFF'
         })
-      })
+      }
     }
     
     res.json({
@@ -3245,336 +2954,308 @@ app.get('/api/players', (req, res) => {
   }
 })
 
-// Debug endpoint to see active_sessions table
+// Debug endpoint to see active_sessions (in-memory)
 app.get('/api/debug/active-sessions', (req, res) => {
   try {
-    const activeSessions = db.prepare(`
-      SELECT 
-        as_table.user_profile_id,
-        as_table.created_at,
-        up.name as profile_name
-      FROM active_sessions as_table
-      LEFT JOIN user_profiles up ON as_table.user_profile_id = up.id
-      ORDER BY as_table.created_at DESC
-    `).all()
+    // Get active sessions from in-memory storage
+    const sessionArray = Array.from(activeSessions).map(profileId => ({
+      user_profile_id: profileId
+    }))
     
     res.json({
-      count: activeSessions.length,
-      sessions: activeSessions
+      count: sessionArray.length,
+      sessions: sessionArray
     })
   } catch (error) {
     res.status(500).json({ error: error.message })
   }
 })
 
-app.get('/api/user-profiles', (req, res) => {
+app.get('/api/user-profiles', async (req, res) => {
   try {
-    const profiles = db.prepare(`
-      SELECT up.*, pc.color, pc.emoji, pc.name as color_name
-      FROM user_profiles up
-      LEFT JOIN player_colors pc ON up.color_id = pc.id
-      ORDER BY up.created_at DESC
-    `).all()
+    // Get all profiles from NoCodeBackend
+    const ncbProfiles = await getAllProfiles()
     
-    // Get active profile IDs from two sources:
-    // 1. Profiles currently in use by players in multiplayer games
-    const activePlayers = db.prepare(`
-      SELECT DISTINCT p.user_profile_id
-      FROM players p
-      WHERE p.left_at IS NULL AND p.user_profile_id IS NOT NULL
-    `).all().map(p => p.user_profile_id)
+    // Get active profile IDs from in-memory rooms
+    const activeProfileIdsFromRooms = new Set()
+    for (const room of rooms.values()) {
+      for (const player of room.players.values()) {
+        if (player.userProfileId) {
+          activeProfileIdsFromRooms.add(player.userProfileId)
+        }
+      }
+    }
     
-    // 2. Profiles currently selected (active sessions)
-    const activeSessions = db.prepare(`
-      SELECT user_profile_id FROM active_sessions
-    `).all().map(s => s.user_profile_id)
+    // Combine with in-memory active sessions
+    const activeProfileIds = [...new Set([...Array.from(activeSessions), ...Array.from(activeProfileIdsFromRooms)])]
     
-    // Combine both sources
-    const activeProfileIds = [...new Set([...activePlayers, ...activeSessions])]
-    
-    // Mark profiles as active
-    const profilesWithStatus = profiles.map(p => ({
-      ...p,
-      isActive: activeProfileIds.includes(p.id)
+    // Transform and mark as active
+    const profilesWithStatus = ncbProfiles.map(p => ({
+      id: p.id.toString(),
+      name: p.name,
+      color: p.color || null,
+      emoji: p.emoji || null,
+      createdAt: p.createdAt || p.created_at || null,
+      lastSeen: p.lastSeen || p.last_seen || null,
+      isActive: activeProfileIds.includes(p.id.toString())
     }))
     
     res.json({
-      total: profiles.length,
+      total: profilesWithStatus.length,
       profiles: profilesWithStatus,
       activeProfileIds: activeProfileIds
     })
   } catch (error) {
+    console.error('[API] Error fetching profiles:', error)
     res.status(500).json({ error: error.message })
   }
 })
 
 // Get all active profiles with details about why they're active
 // MUST come before /api/user-profiles/:profileId to avoid route conflicts
-app.get('/api/user-profiles/active', (req, res) => {
+app.get('/api/user-profiles/active', async (req, res) => {
   try {
-    // Get profiles with active sessions
-    const activeSessions = db.prepare(`
-      SELECT 
-        as_table.user_profile_id,
-        as_table.created_at as session_created_at,
-        up.name as profile_name,
-        up.id as profile_id
-      FROM active_sessions as_table
-      LEFT JOIN user_profiles up ON as_table.user_profile_id = up.id
-    `).all()
+    // Get all profiles from NoCodeBackend to get names
+    const allProfiles = await getAllProfiles()
+    const profileMap = new Map(allProfiles.map(p => [p.id.toString(), p]))
     
-    // Get profiles with active players in rooms
-    const activePlayers = db.prepare(`
-      SELECT DISTINCT
-        p.user_profile_id,
-        up.name as profile_name,
-        up.id as profile_id,
-        COUNT(p.id) as player_count,
-        GROUP_CONCAT(DISTINCT p.room_id) as room_ids,
-        GROUP_CONCAT(DISTINCT r.state) as room_states,
-        MIN(p.joined_at) as first_joined,
-        MAX(r.last_activity) as last_activity
-      FROM players p
-      LEFT JOIN user_profiles up ON p.user_profile_id = up.id
-      LEFT JOIN rooms r ON p.room_id = r.id
-      WHERE p.left_at IS NULL AND p.user_profile_id IS NOT NULL
-      GROUP BY p.user_profile_id
-    `).all()
+    // Get active profiles from in-memory rooms
+    const activeProfilesMap = new Map()
     
-    // Combine and format
-    const allActiveProfileIds = new Set()
-    const activeProfiles = []
-    
-    // Add session-based active profiles
-    for (const session of activeSessions) {
-      if (session.profile_id && !allActiveProfileIds.has(session.profile_id)) {
-        allActiveProfileIds.add(session.profile_id)
-        activeProfiles.push({
-          profileId: session.profile_id,
-          profileName: session.profile_name,
+    // Add profiles from active sessions
+    for (const profileId of activeSessions) {
+      const profile = profileMap.get(profileId)
+      if (profile) {
+        activeProfilesMap.set(profileId, {
+          profileId: profileId,
+          profileName: profile.name,
           activeReasons: ['session'],
-          sessionCreatedAt: session.session_created_at,
           playerCount: 0,
           roomIds: []
         })
       }
     }
     
-    // Add or update player-based active profiles
-    for (const player of activePlayers) {
-      if (player.profile_id) {
-        const existing = activeProfiles.find(p => p.profileId === player.profile_id)
-        if (existing) {
-          existing.activeReasons.push('in_room')
-          existing.playerCount = player.player_count
-          existing.roomIds = player.room_ids ? player.room_ids.split(',') : []
-          existing.firstJoined = player.first_joined
-          existing.lastActivity = player.last_activity
-        } else {
-          allActiveProfileIds.add(player.profile_id)
-          activeProfiles.push({
-            profileId: player.profile_id,
-            profileName: player.profile_name,
-            activeReasons: ['in_room'],
-            playerCount: player.player_count,
-            roomIds: player.room_ids ? player.room_ids.split(',') : [],
-            firstJoined: player.first_joined,
-            lastActivity: player.last_activity
-          })
+    // Add or update profiles from in-memory rooms
+    for (const [roomId, room] of rooms.entries()) {
+      for (const player of room.players.values()) {
+        if (player.userProfileId) {
+          const profile = profileMap.get(player.userProfileId)
+          if (profile) {
+            const existing = activeProfilesMap.get(player.userProfileId)
+            if (existing) {
+              if (!existing.activeReasons.includes('in_room')) {
+                existing.activeReasons.push('in_room')
+              }
+              existing.playerCount++
+              if (!existing.roomIds.includes(roomId)) {
+                existing.roomIds.push(roomId)
+              }
+            } else {
+              activeProfilesMap.set(player.userProfileId, {
+                profileId: player.userProfileId,
+                profileName: profile.name,
+                activeReasons: ['in_room'],
+                playerCount: 1,
+                roomIds: [roomId]
+              })
+            }
+          }
         }
       }
     }
+    
+    const activeProfiles = Array.from(activeProfilesMap.values())
     
     res.json({
       total: activeProfiles.length,
       profiles: activeProfiles
     })
   } catch (error) {
+    console.error('[API] Error fetching active profiles:', error)
     res.status(500).json({ error: error.message })
   }
 })
 
-app.get('/api/user-profiles/:profileId', (req, res) => {
+app.get('/api/user-profiles/:profileId', async (req, res) => {
   try {
     const { profileId } = req.params
-    const { gameType } = req.query // Optional: filter by game type
     
-    const profile = db.prepare(`
-      SELECT up.*, pc.color, pc.emoji, pc.name as color_name
-      FROM user_profiles up
-      LEFT JOIN player_colors pc ON up.color_id = pc.id
-      WHERE up.id = ?
-    `).get(profileId)
+    // Get profile from NoCodeBackend
+    const profile = await getProfile(profileId)
     
     if (!profile) {
       return res.status(404).json({ error: 'Profile not found' })
     }
     
-    // Get overall game statistics for this profile (all games)
-    // Include all historical data, not just active players
-    const overallStats = db.prepare(`
-      SELECT 
-        COUNT(DISTINCT gh.room_id) as total_rooms,
-        COUNT(DISTINCT gh.id) as total_events,
-        MAX(gh.score) as best_score,
-        SUM(gh.score) as total_score,
-        COUNT(DISTINCT CASE WHEN gh.score IS NOT NULL AND gh.score > 0 THEN gh.id END) as games_with_score
-      FROM game_history gh
-      INNER JOIN players p ON gh.player_id = p.id
-      WHERE p.user_profile_id = ?
-    `).get(profileId)
+    // Get statistics from match history in NoCodeBackend
+    const allMatches = await getAllMatches()
+    const profileMatches = allMatches.filter(m => {
+      const winnerId = m.WinnerID || m.winnerId
+      const loserId = m.LoserID || m.loserId
+      return winnerId === profileId || loserId === profileId
+    })
     
-    // Get statistics by game type (parse from event_type or event_data)
-    // Include all historical data, not just active players
-    const statsByGameType = db.prepare(`
-      SELECT 
-        gh.event_type,
-        COUNT(DISTINCT gh.room_id) as rooms,
-        COUNT(DISTINCT gh.id) as events,
-        MAX(gh.score) as best_score,
-        SUM(gh.score) as total_score
-      FROM game_history gh
-      INNER JOIN players p ON gh.player_id = p.id
-      WHERE p.user_profile_id = ? AND gh.score IS NOT NULL
-      GROUP BY gh.event_type
-    `).all(profileId)
+    // Calculate stats
+    const winsByGame = {}
+    const roomsSet = new Set()
+    let totalScore = 0
+    let bestScore = 0
     
-    // Organize stats by game type
-    const gameStats = {}
-    statsByGameType.forEach(stat => {
-      // Map event types to game names
-      let gameName = 'other'
-      if (stat.event_type.includes('microgame') || stat.event_type.includes('warioware')) {
-        gameName = 'warioware'
-      } else if (stat.event_type.includes('kiwi') || stat.event_type.includes('flappy')) {
-        gameName = 'kiwi'
-      } else if (stat.event_type.includes('pacman')) {
-        gameName = 'pacman'
-      } else if (stat.event_type.includes('crash')) {
-        gameName = 'crash'
-      } else if (stat.event_type.includes('pinball')) {
-        gameName = 'pinball'
-      } else if (stat.event_type.includes('gta')) {
-        gameName = 'gta'
-      } else if (stat.event_type.includes('collaboration')) {
-        gameName = 'collaboration'
-      }
+    profileMatches.forEach(match => {
+      const gameType = match.GameType || match.gameType || 'unknown'
+      const winnerId = match.WinnerID || match.winnerId
+      const winnerScore = match.WinnerScore || match.winnerScore || 0
+      const roomId = match.RoomID || match.roomId
       
-      if (!gameStats[gameName]) {
-        gameStats[gameName] = {
-          gamesPlayed: 0,
-          bestScore: 0,
+      if (roomId) roomsSet.add(roomId)
+      
+      if (!winsByGame[gameType]) {
+        winsByGame[gameType] = {
+          wins: 0,
+          losses: 0,
           totalScore: 0,
-          roomsJoined: 0
+          bestScore: 0
         }
       }
       
-      gameStats[gameName].gamesPlayed += stat.events
-      gameStats[gameName].bestScore = Math.max(gameStats[gameName].bestScore, stat.best_score || 0)
-      gameStats[gameName].totalScore += (stat.total_score || 0)
-      gameStats[gameName].roomsJoined += stat.rooms
+      if (winnerId === profileId) {
+        winsByGame[gameType].wins++
+        winsByGame[gameType].totalScore += winnerScore
+        winsByGame[gameType].bestScore = Math.max(winsByGame[gameType].bestScore, winnerScore)
+        totalScore += winnerScore
+        bestScore = Math.max(bestScore, winnerScore)
+      } else {
+        winsByGame[gameType].losses++
+      }
+    })
+    
+    // Transform to expected format
+    const gameStats = {}
+    Object.entries(winsByGame).forEach(([gameType, stats]) => {
+      gameStats[gameType] = {
+        gamesPlayed: stats.wins + stats.losses,
+        wins: stats.wins,
+        losses: stats.losses,
+        bestScore: stats.bestScore,
+        totalScore: stats.totalScore
+      }
     })
     
     res.json({
-      ...profile,
+      id: profile.id.toString(),
+      name: profile.name,
+      color: profile.color || null,
+      emoji: profile.emoji || null,
+      createdAt: profile.createdAt || profile.created_at || null,
+      lastSeen: profile.lastSeen || profile.last_seen || null,
       stats: {
         overall: {
-          totalRooms: overallStats?.total_rooms || 0,
-          totalEvents: overallStats?.total_events || 0,
-          gamesWithScore: overallStats?.games_with_score || 0,
-          bestScore: overallStats?.best_score || 0,
-          totalScore: overallStats?.total_score || 0
+          totalRooms: roomsSet.size,
+          totalMatches: profileMatches.length,
+          totalWins: Object.values(winsByGame).reduce((sum, s) => sum + s.wins, 0),
+          bestScore: bestScore,
+          totalScore: totalScore
         },
         byGame: gameStats
       }
     })
   } catch (error) {
+    console.error('[API] Error fetching profile:', error)
     res.status(500).json({ error: error.message })
   }
 })
 
-app.post('/api/user-profiles', (req, res) => {
+app.post('/api/user-profiles', async (req, res) => {
   try {
-    const { name } = req.body
+    const { name, color, emoji } = req.body
     
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Name is required' })
     }
     
-    // Get or create user profile (this will assign emoji)
-    const userProfile = dbHelpers.getOrCreateUserProfile(name.trim())
-    const colorInfo = dbHelpers.getPlayerColorById(userProfile.color_id)
+    // Create profile in NoCodeBackend
+    // Color and emoji should be provided by client (handled in src/utils/profiles.js)
+    const savedProfile = await saveProfile({
+      name: name.trim(),
+      color: color || null,
+      emoji: emoji || null
+    })
     
     res.json({
-      id: userProfile.id,
-      name: userProfile.name,
-      color: colorInfo?.color || '#FFFFFF',
-      emoji: colorInfo?.emoji || '⚪',
-      colorId: userProfile.color_id,
-      colorName: colorInfo?.name || 'Unknown'
+      id: savedProfile.id.toString(),
+      name: savedProfile.name,
+      color: savedProfile.color || null,
+      emoji: savedProfile.emoji || null
     })
   } catch (error) {
+    console.error('[API] Error creating profile:', error)
     res.status(500).json({ error: error.message })
   }
 })
 
-// Set active session (when profile is selected)
+// Set active session (when profile is selected) - in-memory only
 app.post('/api/user-profiles/:profileId/activate', (req, res) => {
   try {
     const { profileId } = req.params
-    const stmt = db.prepare('INSERT OR REPLACE INTO active_sessions (user_profile_id, created_at) VALUES (?, CURRENT_TIMESTAMP)')
-    stmt.run(profileId)
+    activeSessions.add(profileId)
     res.json({ success: true })
   } catch (error) {
     res.status(500).json({ error: error.message })
   }
 })
 
-// Clear active session (when profile is deselected)
+// Clear active session (when profile is deselected) - in-memory only
 app.post('/api/user-profiles/:profileId/deactivate', (req, res) => {
   try {
     const { profileId } = req.params
-    const stmt = db.prepare('DELETE FROM active_sessions WHERE user_profile_id = ?')
-    stmt.run(profileId)
+    activeSessions.delete(profileId)
     res.json({ success: true })
   } catch (error) {
     res.status(500).json({ error: error.message })
   }
 })
 
-app.delete('/api/user-profiles/:profileId', (req, res) => {
+app.delete('/api/user-profiles/:profileId', async (req, res) => {
   try {
     const { profileId } = req.params
     console.log(`[DELETE] Attempting to delete profile: ${profileId}`)
     
-    // Check if profile exists
-    const profile = db.prepare(`
-      SELECT * FROM user_profiles WHERE id = ?
-    `).get(profileId)
+    // Check if profile exists in NoCodeBackend
+    const profile = await getProfile(profileId)
     
     if (!profile) {
       console.log(`[DELETE] Profile not found: ${profileId}`)
       return res.status(404).json({ error: 'Profile not found' })
     }
     
-    // Check if profile is currently in use
-    const activePlayer = db.prepare(`
-      SELECT COUNT(*) as count FROM players 
-      WHERE user_profile_id = ? AND left_at IS NULL
-    `).get(profileId)
+    // Check if profile is currently in use in in-memory rooms
+    let isInUse = false
+    for (const room of rooms.values()) {
+      for (const player of room.players.values()) {
+        if (player.userProfileId === profileId) {
+          isInUse = true
+          break
+        }
+      }
+      if (isInUse) break
+    }
     
-    if (activePlayer.count > 0) {
-      console.log(`[DELETE] Profile is in use: ${profileId} (${activePlayer.count} active players)`)
+    if (isInUse) {
+      console.log(`[DELETE] Profile is in use: ${profileId}`)
       return res.status(400).json({ error: 'Cannot delete profile that is currently in use' })
     }
     
-    // Clear active session if exists
-    db.prepare('DELETE FROM active_sessions WHERE user_profile_id = ?').run(profileId)
+    // Clear active session if exists (in-memory)
+    activeSessions.delete(profileId)
     
-    // Delete the profile
-    const result = dbHelpers.deleteUserProfile(profileId)
-    console.log(`[DELETE] Profile deleted successfully: ${profileId}`, result)
+    // Delete the profile from NoCodeBackend
+    const success = await deleteProfile(profileId)
+    if (!success) {
+      throw new Error('Failed to delete profile from NoCodeBackend')
+    }
     
+    console.log(`[DELETE] Profile deleted successfully: ${profileId}`)
     res.json({ success: true, message: 'Profile deleted successfully' })
   } catch (error) {
     console.error(`[DELETE] Error deleting profile ${req.params.profileId}:`, error)
@@ -3583,73 +3264,59 @@ app.delete('/api/user-profiles/:profileId', (req, res) => {
 })
 
 
-// Force logout a profile (remove from active_sessions and mark all players as left)
-app.post('/api/user-profiles/:profileId/force-logout', (req, res) => {
+// Force logout a profile (remove from active_sessions and remove from rooms)
+app.post('/api/user-profiles/:profileId/force-logout', async (req, res) => {
   try {
     const { profileId } = req.params
     const { markPlayersLeft = true } = req.body
     
-    // Check if profile exists
-    const profile = db.prepare(`
-      SELECT * FROM user_profiles WHERE id = ?
-    `).get(profileId)
+    // Check if profile exists in NoCodeBackend
+    const profile = await getProfile(profileId)
     
     if (!profile) {
       return res.status(404).json({ error: 'Profile not found' })
     }
     
-    // Remove from active_sessions
-    const sessionResult = db.prepare('DELETE FROM active_sessions WHERE user_profile_id = ?').run(profileId)
+    // Remove from active_sessions (in-memory)
+    activeSessions.delete(profileId)
     
-    let playersMarkedLeft = 0
+    let playersRemoved = 0
     if (markPlayersLeft) {
-      // Mark all active players with this profile as left
-      const players = db.prepare(`
-        SELECT id, socket_id, room_id FROM players 
-        WHERE user_profile_id = ? AND left_at IS NULL
-      `).all(profileId)
-      
-      for (const player of players) {
-        db.prepare('UPDATE players SET left_at = CURRENT_TIMESTAMP WHERE id = ?').run(player.id)
-        
-        // Remove from in-memory rooms if they exist
-        // CRITICAL FIX: room.players is keyed by userProfileId, not socket_id
-        const room = rooms.get(player.room_id)
-        if (room && player.user_profile_id && room.players.has(player.user_profile_id)) {
-          room.players.delete(player.user_profile_id)
-          room.socketIds.delete(player.user_profile_id)
+      // Remove all players with this profile from in-memory rooms
+      for (const [roomId, room] of rooms.entries()) {
+        if (room.players.has(profileId)) {
+          room.players.delete(profileId)
+          room.socketIds.delete(profileId)
+          playersRemoved++
           
-          // Notify remaining players
-          if (room.players.size > 0) {
-            io.to(player.room_id).emit('player-left', {
-              playerId: player.socket_id,
-              players: Array.from(room.players.values())
-            })
-          }
+          // Notify other players
+          const playerArray = Array.from(room.players.values())
+          io.to(roomId).emit('player-left', {
+            playerId: profileId,
+            players: playerArray
+          })
           
-          // Clean up empty rooms
+          // Clean up room if empty
           if (room.players.size === 0) {
-            rooms.delete(player.room_id)
-            dbHelpers.updateRoomState(player.room_id, 'ended')
-            invalidateEndedRoomsCache(player.room_id)
+            rooms.delete(roomId)
           }
         }
-        
-        playersMarkedLeft++
       }
+      
+      res.json({
+        success: true,
+        message: 'Profile force logged out',
+        playersRemoved
+      })
+    } else {
+      res.json({
+        success: true,
+        message: 'Profile force logged out (session cleared only)'
+      })
     }
-    
-    console.log(`[FORCE-LOGOUT] Profile ${profile.name} (${profileId}) logged out. Session removed: ${sessionResult.changes > 0}, Players marked left: ${playersMarkedLeft}`)
-    
-    res.json({
-      success: true,
-      message: 'Profile logged out successfully',
-      sessionRemoved: sessionResult.changes > 0,
-      playersMarkedLeft
-    })
   } catch (error) {
-    console.error(`[FORCE-LOGOUT] Error logging out profile ${req.params.profileId}:`, error)
-    res.status(500).json({ error: error.message || 'Failed to logout profile' })
+    console.error(`[FORCE-LOGOUT] Error force logging out profile ${req.params.profileId}:`, error)
+    res.status(500).json({ error: error.message || 'Failed to force logout profile' })
   }
 })
 
@@ -3661,17 +3328,17 @@ app.post('/api/admin/close-room/:roomId', async (req, res) => {
     const { userProfileId } = req.body
     console.log(`[ADMIN] Force closing room ${roomId}`, { userProfileId })
     
-    // Verify the requester is the host (if userProfileId is provided)
-    const dbRoom = dbHelpers.getRoom(roomId)
-    if (!dbRoom) {
+    // Get room from in-memory storage
+    const room = rooms.get(roomId)
+    if (!room) {
       return res.status(404).json({ error: 'Room not found' })
     }
     
     // If userProfileId is provided, verify they are the host
     // If not provided, allow it (for admin/testing purposes)
-    if (userProfileId && dbRoom.host_user_profile_id) {
-      if (String(userProfileId) !== String(dbRoom.host_user_profile_id)) {
-        console.log(`[ADMIN] User ${userProfileId} attempted to close room ${roomId} but is not host (host: ${dbRoom.host_user_profile_id})`)
+    if (userProfileId && room.hostUserProfileId) {
+      if (String(userProfileId) !== String(room.hostUserProfileId)) {
+        console.log(`[ADMIN] User ${userProfileId} attempted to close room ${roomId} but is not host (host: ${room.hostUserProfileId})`)
         return res.status(403).json({ error: 'Only the host can close the room' })
       }
       console.log(`[ADMIN] Host ${userProfileId} closing room ${roomId}`)
@@ -3679,13 +3346,11 @@ app.post('/api/admin/close-room/:roomId', async (req, res) => {
       console.log(`[ADMIN] Closing room ${roomId} without host verification (admin/test mode)`)
     }
     
-    // Get all active players from database first
-    const dbPlayers = dbHelpers.getPlayersByRoom(roomId)
-    const activeDbPlayers = dbPlayers.filter(p => !p.left_at && p.socket_id)
-    const allSocketIds = new Set(activeDbPlayers.map(p => p.socket_id))
+    // Get all active players from in-memory room
+    const allSocketIds = new Set(Array.from(room.socketIds.values()))
     
-    console.log(`[ADMIN] Found ${activeDbPlayers.length} active players in database`)
-    console.log(`[ADMIN] Socket IDs from DB: ${Array.from(allSocketIds)}`)
+    console.log(`[ADMIN] Found ${room.players.size} active players in room`)
+    console.log(`[ADMIN] Socket IDs: ${Array.from(allSocketIds)}`)
     
     // Get all sockets that are actually in the socket.io room
     const roomSockets = await io.in(roomId).fetchSockets()
@@ -3737,8 +3402,7 @@ app.post('/api/admin/close-room/:roomId', async (req, res) => {
       }
     }
     
-    // Method 4: Get room from memory if it exists and emit to all players
-    const room = rooms.get(roomId)
+    // Method 4: Emit to all players in the room (room already retrieved above)
     if (room) {
       console.log(`[ADMIN] Room found in memory with ${room.players.size} players`)
       for (const [playerSocketId, player] of room.players.entries()) {
@@ -3762,12 +3426,13 @@ app.post('/api/admin/close-room/:roomId', async (req, res) => {
     // Wait a moment to ensure events are sent
     await new Promise(resolve => setTimeout(resolve, 100))
     
-    // Mark all players as left
-    const result = dbHelpers.removeAllPlayersFromRoom(roomId)
-    console.log(`[ADMIN] Marked ${result.changes} player(s) as left in room ${roomId}`)
+    // Remove all players from in-memory room
+    const playerCount = room.players.size
+    room.players.clear()
+    room.socketIds.clear()
+    console.log(`[ADMIN] Removed ${playerCount} player(s) from room ${roomId}`)
     
-    // Update room state
-    dbHelpers.updateRoomState(roomId, 'ended')
+    // Room state stored in-memory only (no database persistence)
     invalidateEndedRoomsCache(roomId)
     
     // Clear in-memory room if it exists
@@ -3828,7 +3493,21 @@ app.post('/api/admin/cleanup-stale', (req, res) => {
       params.push(roomId)
     }
     
-    const activePlayers = db.prepare(query).all(...params)
+    // Get active players from in-memory rooms
+    const activePlayers = []
+    for (const [rId, room] of rooms.entries()) {
+      if (roomId && rId !== roomId) continue
+      for (const [userProfileId, player] of room.players.entries()) {
+        activePlayers.push({
+          id: userProfileId,
+          socket_id: player.socketId,
+          room_id: rId,
+          user_profile_id: userProfileId,
+          last_activity: room.lastActivity,
+          joined_at: room.lastActivity
+        })
+      }
+    }
     
     let cleanedCount = 0
     let disconnectedCount = 0
@@ -3845,7 +3524,7 @@ app.post('/api/admin/cleanup-stale', (req, res) => {
         const reason = force ? 'force_cleanup' : (!isSocketActive ? 'socket_disconnected' : 'stale_timeout')
         
         // Mark as left
-        db.prepare('UPDATE players SET left_at = CURRENT_TIMESTAMP WHERE id = ?').run(player.id)
+        // Player data stored in-memory only (no database persistence)
         
         if (!isSocketActive) {
           disconnectedCount++
@@ -3867,13 +3546,14 @@ app.post('/api/admin/cleanup-stale', (req, res) => {
           
           if (room.players.size === 0) {
             rooms.delete(player.room_id)
-            dbHelpers.updateRoomState(player.room_id, 'ended')
+            // Room state stored in-memory only (no database persistence)
             invalidateEndedRoomsCache(player.room_id)
             cleanedRooms.add(player.room_id)
           }
         }
         
-        dbHelpers.addGameEvent(player.room_id, player.id, 'player_left_stale', { reason })
+        // Game events no longer persisted (match results saved to NoCodeBackend)
+      // dbHelpers.addGameEvent(player.room_id, player.id, 'player_left_stale', { reason })
         cleanedCount++
         cleanedRooms.add(player.room_id)
         if (player.user_profile_id) {
@@ -3910,48 +3590,43 @@ app.post('/api/admin/cleanup-room/:roomId', (req, res) => {
     // Get all active socket IDs
     const activeSocketIds = new Set(Array.from(io.sockets.sockets.keys()))
     
-    // Get all players in this room
-    const players = dbHelpers.getPlayersByRoom(roomId)
-    const activePlayers = players.filter(p => !p.left_at)
+    // Get all players in this room from in-memory storage
+    const room = rooms.get(roomId)
+    if (!room) {
+      return res.status(404).json({ error: 'Room not found' })
+    }
     
     let cleanedCount = 0
     let disconnectedCount = 0
     
-    for (const player of activePlayers) {
-      const isSocketActive = activeSocketIds.has(player.socket_id)
+    for (const [userProfileId, player] of room.players.entries()) {
+      const isSocketActive = activeSocketIds.has(player.socketId)
       
       if (force || !isSocketActive) {
         const reason = force ? 'force_cleanup' : 'socket_disconnected'
         
-        // Mark as left
-        dbHelpers.removePlayer(player.socket_id)
+        // Remove from in-memory room
+        room.players.delete(userProfileId)
+        room.socketIds.delete(userProfileId)
         
         if (!isSocketActive) {
           disconnectedCount++
         }
         
-        // Remove from in-memory room
-        // CRITICAL FIX: room.players is keyed by userProfileId, not socket_id
-        const room = rooms.get(roomId)
-        if (room && player.user_profile_id && room.players.has(player.user_profile_id)) {
-          room.players.delete(player.user_profile_id)
-          room.socketIds.delete(player.user_profile_id)
-          
-          if (room.players.size > 0) {
-            io.to(roomId).emit('player-left', {
-              playerId: player.user_profile_id,
-              players: Array.from(room.players.values())
-            })
-          }
-          
-          if (room.players.size === 0) {
-            rooms.delete(roomId)
-            dbHelpers.updateRoomState(roomId, 'ended')
-            invalidateEndedRoomsCache(roomId)
-          }
+        if (room.players.size > 0) {
+          io.to(roomId).emit('player-left', {
+            playerId: userProfileId,
+            players: Array.from(room.players.values())
+          })
         }
         
-        dbHelpers.addGameEvent(roomId, player.id, 'player_left_stale', { reason })
+        if (room.players.size === 0) {
+          rooms.delete(roomId)
+          // Room state stored in-memory only (no database persistence)
+          invalidateEndedRoomsCache(roomId)
+        }
+        
+        // Game events no longer persisted (match results saved to NoCodeBackend)
         cleanedCount++
       }
     }
@@ -3972,31 +3647,17 @@ app.post('/api/admin/cleanup-room/:roomId', (req, res) => {
   }
 })
 
-// Win tracking API endpoints
-app.post('/api/wins/record', (req, res) => {
-  try {
-    const { userProfileId, gameType } = req.body
-    
-    if (!userProfileId || !gameType) {
-      return res.status(400).json({ error: 'userProfileId and gameType are required' })
-    }
-    
-    dbHelpers.recordWin(userProfileId, gameType)
-    
-    res.json({ success: true, message: 'Win recorded' })
-  } catch (error) {
-    console.error('[API] Error recording win:', error)
-    res.status(500).json({ error: error.message })
-  }
-})
+// Win tracking API endpoints (using NoCodeBackend)
+// Note: Wins are recorded via NoCodeBackend from the client (saveMatch function)
+// These endpoints only read win data from NoCodeBackend
 
 // Get wins for a specific game type
-app.get('/api/wins/:gameType', (req, res) => {
+app.get('/api/wins/:gameType', async (req, res) => {
   try {
     const { gameType } = req.params
-    const wins = dbHelpers.getWinsByGameType(gameType)
+    const leaderboard = await getLeaderboard(gameType)
     
-    res.json({ gameType, wins })
+    res.json({ gameType, wins: leaderboard })
   } catch (error) {
     console.error('[API] Error fetching wins:', error)
     res.status(500).json({ error: error.message })
@@ -4004,16 +3665,28 @@ app.get('/api/wins/:gameType', (req, res) => {
 })
 
 // Get all wins for a specific player
-app.get('/api/wins/player/:userProfileId', (req, res) => {
+app.get('/api/wins/player/:userProfileId', async (req, res) => {
   try {
     const { userProfileId } = req.params
-    const wins = dbHelpers.getPlayerWins(userProfileId)
+    // Get wins for all game types
+    const allMatches = await getAllMatches()
     
-    // Convert to object format for easier access
     const winsByGame = {}
-    wins.forEach(({ game_type, wins: winCount }) => {
-      winsByGame[game_type] = winCount
+    const gameTypes = new Set()
+    
+    // Collect all game types
+    allMatches.forEach(match => {
+      const gameType = match.GameType || match.gameType
+      if (gameType) gameTypes.add(gameType)
     })
+    
+    // Count wins per game type for this player
+    for (const gameType of gameTypes) {
+      const count = await getWinCount(userProfileId, gameType)
+      if (count > 0) {
+        winsByGame[gameType] = count
+      }
+    }
     
     res.json({ userProfileId, wins: winsByGame })
   } catch (error) {
@@ -4023,17 +3696,33 @@ app.get('/api/wins/player/:userProfileId', (req, res) => {
 })
 
 // Get wins for players in a room for a specific game
-app.get('/api/wins/room/:roomId/:gameType', (req, res) => {
+app.get('/api/wins/room/:roomId/:gameType', async (req, res) => {
   try {
     const { roomId, gameType } = req.params
-    const players = dbHelpers.getPlayersByRoom(roomId)
     
-    const wins = players
-      .filter(p => p.user_profile_id)
-      .map(player => ({
-        userProfileId: player.user_profile_id,
-        wins: dbHelpers.getWinCount(player.user_profile_id, gameType)
-      }))
+    // Get players from in-memory room
+    const room = rooms.get(roomId)
+    if (!room) {
+      return res.json({ roomId, gameType, wins: [] })
+    }
+    
+    // Extract user profile IDs from room players
+    const userProfileIds = Array.from(room.players.values())
+      .map(p => p.userProfileId)
+      .filter(id => id) // Filter out undefined/null
+    
+    if (userProfileIds.length === 0) {
+      return res.json({ roomId, gameType, wins: [] })
+    }
+    
+    // Get wins for all players at once
+    const winsMap = await getWinsForPlayers(userProfileIds, gameType)
+    
+    // Convert to array format
+    const wins = Object.entries(winsMap).map(([userProfileId, wins]) => ({
+      userProfileId,
+      wins
+    }))
     
     res.json({ roomId, gameType, wins })
   } catch (error) {
@@ -4047,4 +3736,5 @@ httpServer.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`)
   console.log(`Access from local network: http://<your-ip>:${PORT}`)
 })
+
 

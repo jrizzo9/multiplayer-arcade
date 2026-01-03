@@ -3,6 +3,7 @@
 
 import { io } from 'socket.io-client'
 import { checkServerHealth } from './serverHealth'
+import { getApiUrl } from './apiUrl'
 
 let socketInstance = null
 
@@ -12,29 +13,30 @@ let socketInstance = null
  */
 export function getSocket() {
   if (!socketInstance) {
-    // Use environment variable for production, fallback to localhost for development
-    // Always use the same protocol as the current page to avoid mixed content errors
-    const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:'
-    const serverUrl = import.meta.env.VITE_SERVER_URL || `${protocol}//${window.location.hostname}:8000`
+    // Use the same URL logic as API calls - defaults to Render server
+    const serverUrl = getApiUrl()
     
-    // For Render free tier, use longer timeouts and try polling first (more reliable during wake-up)
+    // For Render free tier, use longer timeouts
     const isProduction = serverUrl.includes('onrender.com') || serverUrl.includes('vercel.app')
     
     socketInstance = io(serverUrl, {
-      // Try polling first, then upgrade to websocket (more reliable during server wake-up)
-      transports: isProduction ? ['polling', 'websocket'] : ['websocket', 'polling'],
+      // Prefer polling for Render (WebSocket has issues), then upgrade to WebSocket if available
+      // This ensures faster initial connection since polling is more reliable on Render
+      transports: ['polling', 'websocket'],
       reconnection: true,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 10000, // Increased max delay for Render wake-up
       reconnectionAttempts: 20, // Increased attempts for Render free tier (can take ~60s to wake)
       forceNew: false,
-      timeout: isProduction ? 60000 : 20000, // 60s timeout for production (Render wake-up), 20s for dev
+      timeout: isProduction ? 10000 : 5000, // Reduced timeout: 10s for production, 5s for dev
       // Additional options for better reliability
-      upgrade: true, // Allow transport upgrade
+      upgrade: true, // Allow transport upgrade from polling to WebSocket after connection
       rememberUpgrade: false, // Don't remember upgrade (start fresh each time)
       // Increase ping timeout for slow connections
       pingTimeout: isProduction ? 60000 : 20000,
-      pingInterval: 25000
+      pingInterval: 25000,
+      // Faster connection attempt timeout
+      connectTimeout: isProduction ? 10000 : 5000 // Fail faster if initial connection fails
     })
 
     // Log connection events for debugging

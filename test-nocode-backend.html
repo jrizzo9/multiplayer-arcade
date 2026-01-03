@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NoCodeBackend Integration Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #fff;
+        }
+        .test-section {
+            background: #2a2a2a;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+        }
+        button {
+            background: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background: #45a049;
+        }
+        .result {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 4px;
+            white-space: pre-wrap;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .success {
+            background: #1e3a1e;
+            border: 1px solid #4CAF50;
+        }
+        .error {
+            background: #3a1e1e;
+            border: 1px solid #f44336;
+        }
+    </style>
+</head>
+<body>
+    <h1>🚀 NoCodeBackend Integration Test</h1>
+    
+    <div class="test-section">
+        <h2>Test 1: Save Match</h2>
+        <button onclick="testSaveMatch()">Test Save Match</button>
+        <div id="saveResult" class="result" style="display:none;"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>Test 2: Read Matches</h2>
+        <button onclick="testReadMatches()">Test Read Matches</button>
+        <div id="readResult" class="result" style="display:none;"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>Test 3: Search Matches</h2>
+        <button onclick="testSearchMatches()">Test Search Matches</button>
+        <div id="searchResult" class="result" style="display:none;"></div>
+    </div>
+
+    <script type="module">
+        const API_KEY = '4d00ba698fcab74d4269f9819557d85114bf634be820db33e133c9e7594f'
+        const BASE_URL = 'http://api.nocodebackend.com'
+
+        window.testSaveMatch = async function() {
+            const resultDiv = document.getElementById('saveResult')
+            resultDiv.style.display = 'block'
+            resultDiv.className = 'result'
+            resultDiv.textContent = 'Testing...'
+
+            try {
+                const matchData = {
+                    gameType: 'pong',
+                    winnerId: 'test-winner-' + Date.now(),
+                    winnerName: 'Test Winner',
+                    winnerScore: 5,
+                    loserId: 'test-loser-' + Date.now(),
+                    loserName: 'Test Loser',
+                    loserScore: 3,
+                    roomId: 'test-room-' + Date.now(),
+                    timestamp: new Date().toISOString()
+                }
+
+                const response = await fetch(`${BASE_URL}/create/Matches`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${API_KEY}`
+                    },
+                    body: JSON.stringify(matchData)
+                })
+
+                if (!response.ok) {
+                    const errorText = await response.text()
+                    throw new Error(`HTTP ${response.status}: ${errorText}`)
+                }
+
+                const result = await response.json()
+                resultDiv.className = 'result success'
+                resultDiv.textContent = '✅ Success!\n\n' + JSON.stringify(result, null, 2)
+            } catch (error) {
+                resultDiv.className = 'result error'
+                resultDiv.textContent = '❌ Error: ' + error.message
+            }
+        }
+
+        window.testReadMatches = async function() {
+            const resultDiv = document.getElementById('readResult')
+            resultDiv.style.display = 'block'
+            resultDiv.className = 'result'
+            resultDiv.textContent = 'Testing...'
+
+            try {
+                const response = await fetch(`${BASE_URL}/read/Matches`, {
+                    method: 'GET',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${API_KEY}`
+                    }
+                })
+
+                if (!response.ok) {
+                    const errorText = await response.text()
+                    throw new Error(`HTTP ${response.status}: ${errorText}`)
+                }
+
+                const result = await response.json()
+                resultDiv.className = 'result success'
+                resultDiv.textContent = `✅ Success! Found ${Array.isArray(result) ? result.length : 'unknown'} matches\n\n` + 
+                    JSON.stringify(Array.isArray(result) ? result.slice(0, 3) : result, null, 2)
+            } catch (error) {
+                resultDiv.className = 'result error'
+                resultDiv.textContent = '❌ Error: ' + error.message
+            }
+        }
+
+        window.testSearchMatches = async function() {
+            const resultDiv = document.getElementById('searchResult')
+            resultDiv.style.display = 'block'
+            resultDiv.className = 'result'
+            resultDiv.textContent = 'Testing...'
+
+            try {
+                const searchData = {
+                    gameType: 'pong'
+                }
+
+                const response = await fetch(`${BASE_URL}/search/Matches`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${API_KEY}`
+                    },
+                    body: JSON.stringify(searchData)
+                })
+
+                if (!response.ok) {
+                    const errorText = await response.text()
+                    throw new Error(`HTTP ${response.status}: ${errorText}`)
+                }
+
+                const result = await response.json()
+                resultDiv.className = 'result success'
+                resultDiv.textContent = `✅ Success! Found ${Array.isArray(result) ? result.length : 'unknown'} matches\n\n` + 
+                    JSON.stringify(Array.isArray(result) ? result.slice(0, 3) : result, null, 2)
+            } catch (error) {
+                resultDiv.className = 'result error'
+                resultDiv.textContent = '❌ Error: ' + error.message
+            }
+        }
+    </script>
+</body>
+</html>
+

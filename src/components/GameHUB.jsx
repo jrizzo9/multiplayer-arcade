@@ -84,13 +84,16 @@ function GameHUB({ onBack, currentGame, gameScore, scorePulse }) {
             }}
           >
             {players.map((player, idx) => {
+              const emoji = player.emoji || '⚪'
+              const color = player.color || '#FFFFFF'
               const winCount = wins[player.userProfileId] || 0
+              
               return (
                 <div key={player.userProfileId || idx} className="flex items-center gap-1">
-                  <span className="text-xs">{player.emoji || '⚪'}</span>
+                  <span className="text-xs">{emoji}</span>
                   <span 
                     className="text-xs font-bold"
-                    style={{ color: player.color || '#FFFFFF' }}
+                    style={{ color: color }}
                   >
                     {winCount}
                   </span>

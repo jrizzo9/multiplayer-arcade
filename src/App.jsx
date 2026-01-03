@@ -10,7 +10,6 @@ import ProfileSelector from './components/ProfileSelector'
 import ErrorLogger from './components/ErrorLogger'
 import SocketTest from './components/SocketTest'
 import AppHUD from './components/AppHUD'
-import ServerStatus from './components/ServerStatus'
 import PlayerProfile from './components/PlayerProfile'
 import GameHUB from './components/GameHUB'
 import { RoomProvider, useRoomConnection, useRoom } from './multiplayer/RoomProvider'
@@ -87,7 +86,7 @@ function App() {
                 if (playersResponse.ok) {
                   const players = await playersResponse.json()
                   const userInRoom = players.some(p => 
-                    (String(p.user_profile_id) === String(profile.id) || p.user_profile_id === profile.id) && !p.left_at
+                    String(p.userProfileId) === String(profile.id) || p.userProfileId === profile.id
                   )
                   
                   if (userInRoom) {
@@ -95,11 +94,10 @@ function App() {
                     
                     // Determine if user is host by checking if they're the first player (room creator)
                     // Sort players by joined_at to find the first player (host)
+                    // Players are already active (no left_at field in in-memory rooms)
                     const activePlayers = players
-                      .filter(p => !p.left_at)
-                      .sort((a, b) => new Date(a.joined_at || 0) - new Date(b.joined_at || 0))
                     const userPlayer = activePlayers.find(p => 
-                      (String(p.user_profile_id) === String(profile.id) || p.user_profile_id === profile.id)
+                      String(p.userProfileId) === String(profile.id) || p.userProfileId === profile.id
                     )
                     // Check if this user was the first to join (host)
                     const isHost = savedRoomState.isHost || (userPlayer && activePlayers.indexOf(userPlayer) === 0)
@@ -154,7 +152,7 @@ function App() {
                 const players = await playersResponse.json()
                 // Check if user is in room (handle both string and number ID comparisons)
                 const userInRoom = players.some(p => 
-                  (String(p.user_profile_id) === String(profile.id) || p.user_profile_id === profile.id) && !p.left_at
+                  String(p.userProfileId) === String(profile.id) || p.userProfileId === profile.id
                 )
                 
                 if (userInRoom && roomData.state !== 'ended') {
@@ -162,11 +160,10 @@ function App() {
                   
                   // Determine if user is host by checking if they're the first player
                   // Sort players by joined_at to find the first player (host)
+                  // Players are already active (no left_at field in in-memory rooms)
                   const activePlayers = players
-                    .filter(p => !p.left_at)
-                    .sort((a, b) => new Date(a.joined_at || 0) - new Date(b.joined_at || 0))
                   const userPlayer = activePlayers.find(p => 
-                    (String(p.user_profile_id) === String(profile.id) || p.user_profile_id === profile.id)
+                    String(p.userProfileId) === String(profile.id) || p.userProfileId === profile.id
                   )
                   const isHost = userPlayer && activePlayers.indexOf(userPlayer) === 0
                   
@@ -247,7 +244,7 @@ function App() {
               if (playersResponse.ok) {
                 const players = await playersResponse.json()
                 const userInRoom = players.some(p => 
-                  (String(p.user_profile_id) === String(selectedProfile.id) || p.user_profile_id === selectedProfile.id) && !p.left_at
+                  String(p.userProfileId) === String(selectedProfile.id) || p.userProfileId === selectedProfile.id
                 )
                 
                 if (userInRoom) {
@@ -406,7 +403,7 @@ function App() {
     if (roomId && profile) {
       try {
         // Leave the room via socket
-        await leaveRoom(roomId, { userProfileId: profile.id })
+        await leaveRoom(roomId, { userProfileId: profile?.id })
         console.log('[App] Left room during logout:', roomId)
       } catch (error) {
         console.error('[App] Error leaving room during logout:', error)
@@ -1018,7 +1015,6 @@ function App() {
           onLogout={handleLogout}
         />
         <ErrorLogger />
-        <ServerStatus />
         
         {/* Opt-in join prompt when room ID is in URL but user hasn't joined */}
         <OptInRoomJoin
@@ -1059,7 +1055,7 @@ function App() {
         <PlayerProfile
           player={{
             userProfileId: selectedProfile.id,
-            emoji: selectedProfile.animal || '⚪',
+            emoji: selectedProfile.emoji || '⚪',
             color: selectedProfile.color || '#FFFFFF',
             name: selectedProfile.name
           }}

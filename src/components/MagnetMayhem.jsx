@@ -668,18 +668,9 @@ function MagnetMayhem({ roomId, isHost: propIsHost, onLeave, onRoomCreated, play
         setWinnerUserProfileId(winner)
         soundManager.playGameOver()
         
-        // Record win if there's a winner
+        // Wins are automatically saved to NoCodeBackend via match history
         if (winner) {
-          const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:'
-          const serverUrl = `${protocol}//${window.location.hostname}:8000`
-          fetch(`${serverUrl}/api/wins/record`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              userProfileId: winner,
-              gameType: 'magnet-mayhem'
-            })
-          }).catch(err => console.error('[MagnetMayhem] Error recording win:', err))
+          // No need to record win separately - handled by match history
         }
         
         // Broadcast gameover

@@ -65,29 +65,16 @@ function ProfileSelector({ onProfileSelected, onExit }) {
     }
   }
 
-  const loadProfiles = async () => {
+  const loadProfiles = async (forceRefresh = false) => {
     try {
-      console.log('[ProfileSelector] Loading profiles...')
-      const allProfiles = await getAllProfiles()
+      console.log('[ProfileSelector] Loading profiles...', forceRefresh ? '(forced refresh)' : '')
+      const allProfiles = await getAllProfiles(forceRefresh)
       console.log('[ProfileSelector] Loaded profiles:', allProfiles.length, 'profiles')
       console.log('[ProfileSelector] Profile details:', allProfiles.map(p => ({ id: p.id, name: p.name, isActive: p.isActive })))
       
       if (allProfiles.length === 0) {
-        // Check if this is because of an error or just no profiles exist
-        const apiUrl = getApiUrl()
-        try {
-          // Try to ping the backend to see if it's reachable
-          const testResponse = await fetch(`${apiUrl}/api/user-profiles`, { method: 'HEAD' })
-          if (!testResponse.ok && testResponse.status !== 405) {
-            setError(`Backend server error (${testResponse.status}). Is the server running on port 8000?`)
-          } else {
-            // Server is reachable, just no profiles exist
-            setError('')
-          }
-        } catch (fetchError) {
-          console.error('[ProfileSelector] Cannot reach backend server:', fetchError)
-          setError(`Cannot connect to backend server at ${apiUrl}. Is the server running on port 8000?`)
-        }
+        // No profiles exist - this is fine for NoCodeBackend
+        setError('')
       } else {
         setError('')
       }
@@ -130,13 +117,40 @@ function ProfileSelector({ onProfileSelected, onExit }) {
 
     try {
       const newProfile = await createProfile(newProfileName.trim())
-      await loadProfiles() // Reload from backend
+      console.log('[ProfileSelector] Profile created, new profile:', newProfile)
+      
+      // Immediately add the new profile to the local state
+      // This ensures it shows up even if the server hasn't indexed it yet
+      setProfiles(prevProfiles => {
+        // Check if it's already in the list
+        const exists = prevProfiles.some(p => 
+          p.id === newProfile.id || 
+          String(p.id) === String(newProfile.id) ||
+          p.name.toLowerCase() === newProfile.name.toLowerCase()
+        )
+        if (exists) {
+          return prevProfiles
+        }
+        // Add the new profile to the list
+        return [...prevProfiles, newProfile]
+      })
+      
+      // Also refresh from server in the background
+      loadProfiles(true).catch(err => {
+        console.error('[ProfileSelector] Error refreshing profiles after creation:', err)
+        // Don't show error to user - we already added the profile locally
+      })
+      
       setSelectedProfileId(newProfile.id)
       setNewProfileName('')
       setIsCreating(false)
       setError('')
       soundManager.playSuccess()
-      setNotification({ message: 'Profile created successfully', type: 'success' })
+      setNotification({ 
+        message: `${newProfile.name} is ready!`, 
+        type: 'success',
+        duration: 1500
+      })
     } catch (error) {
       console.error('Error creating profile:', error)
       soundManager.playError()
@@ -191,7 +205,7 @@ function ProfileSelector({ onProfileSelected, onExit }) {
     }
 
     soundManager.playSelect()
-    await setCurrentProfile(profile.name) // Store by name and mark as active
+    await setCurrentProfile(profile.name) // Store by name
     onProfileSelected(profile)
   }
 
@@ -232,39 +246,22 @@ function ProfileSelector({ onProfileSelected, onExit }) {
   }
 
   return (
-    <div className="w-full h-screen bg-black flex flex-col relative px-medium overflow-hidden">
-      {/* Exit/Back Button */}
-      {onExit && (
-        <button
-          onClick={handleExit}
-          className="absolute top-16 sm:top-20 left-4 z-50 flex items-center gap-1.5 px-2 py-1 text-xs border border-white/30 rounded hover:bg-white hover:text-black transition-all duration-200 cursor-pointer touch-manipulation"
-          style={{ 
-            backgroundColor: 'rgba(255, 255, 255, 0.1)',
-            backdropFilter: 'blur(8px)'
-          }}
-        >
-          <span className="text-xs">←</span>
-          <span className="text-xs">Back</span>
-        </button>
-      )}
-      
-      {/* Force Logout / Active Profiles Manager Button */}
-      <button
-        onClick={() => {
-          soundManager.playClick()
-          setShowActiveProfilesManager(true)
-        }}
-        className="absolute top-16 sm:top-20 right-4 z-50 flex items-center gap-1.5 px-2 py-1 text-xs border border-white/30 rounded hover:bg-white hover:text-black transition-all duration-200 cursor-pointer touch-manipulation"
-        style={{ 
-          backgroundColor: 'rgba(255, 255, 255, 0.1)',
-          backdropFilter: 'blur(8px)'
-        }}
-      >
-        <span className="text-xs">Force Logout</span>
-      </button>
-      
-      <div className="w-full h-full flex flex-col items-center justify-center overflow-y-auto pt-large pb-medium">
-        <div className="w-full max-w-5xl mx-auto flex flex-col items-center pt-16 sm:pt-20 pb-12">
+    <div className="w-full h-screen bg-black flex flex-col relative overflow-hidden">
+      <div className="w-full h-full flex flex-col items-center overflow-y-auto">
+        <div className="w-full max-w-5xl mx-auto flex flex-col items-center pt-20 sm:pt-24 md:pt-28 pb-12 px-4">
+          {/* Exit/Back Button - Integrated in header area */}
+          {onExit && (
+            <button
+              onClick={handleExit}
+              className="self-start mb-6 flex items-center gap-2 px-3 py-1.5 text-sm text-white/70 hover:text-white border border-white/20 hover:border-white/40 rounded-lg hover:bg-white/10 transition-all duration-200 cursor-pointer touch-manipulation"
+              style={{ 
+                backdropFilter: 'blur(8px)'
+              }}
+            >
+              <span className="text-base">←</span>
+              <span>Back</span>
+            </button>
+          )}
         <div className="flex flex-col items-center w-full mb-10 sm:mb-12 md:mb-16 relative px-4">
           <h1 className="text-4xl sm:text-5xl md:text-6xl lg:text-7xl xl:text-8xl font-bold text-white text-center tracking-tight leading-tight">
             <span className="inline-block animate-fade-in">WHO'S</span>
@@ -283,8 +280,8 @@ function ProfileSelector({ onProfileSelected, onExit }) {
                   const isSelected = selectedProfileId === profile.id
                   const isDisabled = profile.isActive && !isSelected
                   
-                  const animalStyle = profile.animal && profile.color 
-                    ? { emoji: profile.animal, color: profile.color }
+                  const animalStyle = profile.emoji && profile.color 
+                    ? { emoji: profile.emoji, color: profile.color }
                     : { emoji: '🤖', color: '#808080' }
                   
                   return (
@@ -362,8 +359,8 @@ function ProfileSelector({ onProfileSelected, onExit }) {
                 console.log(`Profile ${profile.name} is active, disabled: ${isDisabled}, selected: ${isSelected}`)
               }
               
-              const animalStyle = profile.animal && profile.color 
-                ? { emoji: profile.animal, color: profile.color }
+              const animalStyle = profile.emoji && profile.color 
+                ? { emoji: profile.emoji, color: profile.color }
                 : getProfileAnimal(index)
               
               return (
@@ -608,6 +605,7 @@ function ProfileSelector({ onProfileSelected, onExit }) {
         <Notification
           message={notification.message}
           type={notification.type}
+          duration={notification.duration}
           onClose={() => setNotification(null)}
         />
       )}

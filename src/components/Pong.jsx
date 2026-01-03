@@ -7,6 +7,7 @@ import { emitPaddleMove, emitGameStart, emitGameState, subscribeToPongEvents } f
 import soundManager from '../utils/sounds'
 import Notification from './Notification'
 import { getApiUrl } from '../utils/apiUrl'
+import { saveMatch } from '../services/db'
 
 const GAME_WIDTH = 400
 const GAME_HEIGHT = 600
@@ -81,7 +82,7 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
   const socketInitializedRef = useRef(false)
   const sessionIdRef = useRef(`pong-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`)
   const lastBroadcastTimeRef = useRef(0)
-  const BROADCAST_THROTTLE_MS = 33 // ~30 Hz (33ms = 30 updates per second)
+  const BROADCAST_THROTTLE_MS = 33 // ~30 Hz (33ms = 30 updates per second) - Improved smoothness
   const lastPaddleHitRef = useRef(false) // Track if we've already played sound for this paddle hit
   const lastWallHitRef = useRef(false) // Track if we've already played sound for this wall hit
   const lastStateUpdateTimeRef = useRef(0)
@@ -93,6 +94,31 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
   const lastBallVelYRef = useRef(0) // Track previous ball velocity Y for non-host sound detection
   const lastBallXRef = useRef(GAME_WIDTH / 2) // Track previous ball X for non-host sound detection
   const lastBallYRef = useRef(GAME_HEIGHT / 2) // Track previous ball Y for non-host sound detection
+  
+  // Ping/Latency tracking for performance monitoring
+  const [pingLatency, setPingLatency] = useState(null) // RTT in milliseconds
+  const pingIntervalRef = useRef(null)
+  const pendingPingRef = useRef(null) // Track pending ping timestamp
+  
+  // Client-side prediction: track predicted paddle position vs server position
+  const predictedPaddleXRef = useRef(null) // Our predicted position
+  const serverPaddleXRef = useRef(null) // Last server-confirmed position
+  const RECONCILIATION_THRESHOLD = 5 // Only reconcile if difference > 5px
+  
+  // Linear interpolation (LERP) state for smooth rendering
+  // Ball interpolation
+  const targetBallXRef = useRef(GAME_WIDTH / 2) // Target position from server
+  const targetBallYRef = useRef(GAME_HEIGHT / 2)
+  const lastBallXForLerpRef = useRef(GAME_WIDTH / 2) // Previous position for interpolation
+  const lastBallYForLerpRef = useRef(GAME_HEIGHT / 2)
+  const lastServerUpdateTimestampRef = useRef(0) // Timestamp of last server update
+  const INTERPOLATION_DELAY_MS = 50 // Delay interpolation by 50ms to account for network jitter
+  const SERVER_TICK_RATE_MS = 33 // Expected time between server updates (30Hz)
+  
+  // Opponent paddle interpolation
+  const targetOpponentPaddleXRef = useRef(GAME_WIDTH / 2 - PADDLE_WIDTH / 2)
+  const lastOpponentPaddleXForLerpRef = useRef(GAME_WIDTH / 2 - PADDLE_WIDTH / 2)
+  const lastOpponentPaddleUpdateTimestampRef = useRef(0)
   
   const [isCPU, setIsCPU] = useState(false)
 
@@ -176,6 +202,14 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
     }
   }
   
+  // Linear interpolation helper function
+  // t should be between 0 and 1, where 0 = start position, 1 = target position
+  const lerp = (start, target, t) => {
+    // Clamp t between 0 and 1 to prevent overshooting
+    const clampedT = Math.max(0, Math.min(1, t))
+    return start + (target - start) * clampedT
+  }
+  
   const displayPaddles = getDisplayPaddlePositions()
   const displayScores = getDisplayScores()
 
@@ -219,6 +253,17 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
     socketRef.current = socket
     socketInitializedRef.current = true
 
+    // Listen for ping response
+    const handlePongPong = ({ timestamp }) => {
+      if (pendingPingRef.current === timestamp) {
+        const rtt = Date.now() - timestamp
+        setPingLatency(rtt)
+        pendingPingRef.current = null
+      }
+    }
+    
+    socket.on('pong-pong', handlePongPong)
+    
     // Subscribe to Pong game events via network layer
     const cleanup = subscribeToPongEvents({
       onGameStart: ({ gameState: startGameState }) => {
@@ -239,16 +284,16 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
                 
                 // Show touch control area animation
                 setShowTouchAreaAnimation(true)
-                setTimeout(() => {
-                  setShowTouchAreaAnimation(false)
-                }, 2500) // Show for 2.5 seconds
-                
-                return null
-              }
-              soundManager.playSelect()
-              return prev - 1
-            })
-          }, 1000)
+          setTimeout(() => {
+            setShowTouchAreaAnimation(false)
+          }, 2500) // Show for 2.5 seconds
+          
+          return null
+        }
+        soundManager.playSelect()
+        return prev - 1
+      })
+    }, 1000)
           
           if (startGameState.topPaddleX !== undefined) {
             setTopPaddleX(startGameState.topPaddleX)
@@ -261,10 +306,17 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
           if (startGameState.ballX !== undefined) {
             setBallX(startGameState.ballX)
             ballXRef.current = startGameState.ballX
+            // Initialize interpolation refs
+            targetBallXRef.current = startGameState.ballX
+            lastBallXForLerpRef.current = startGameState.ballX
           }
           if (startGameState.ballY !== undefined) {
             setBallY(startGameState.ballY)
             ballYRef.current = startGameState.ballY
+            // Initialize interpolation refs
+            targetBallYRef.current = startGameState.ballY
+            lastBallYForLerpRef.current = startGameState.ballY
+            lastServerUpdateTimestampRef.current = Date.now()
           }
           if (startGameState.ballVelX !== undefined) {
             setBallVelX(startGameState.ballVelX)
@@ -307,10 +359,17 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
             soundManager.playScore()
             
             // Set ball to center position for explosion
-            setBallX(GAME_WIDTH / 2)
-            setBallY(GAME_HEIGHT / 2)
-            ballXRef.current = GAME_WIDTH / 2
-            ballYRef.current = GAME_HEIGHT / 2
+            const centerBallX = GAME_WIDTH / 2
+            const centerBallY = GAME_HEIGHT / 2
+            setBallX(centerBallX)
+            setBallY(centerBallY)
+            ballXRef.current = centerBallX
+            ballYRef.current = centerBallY
+            // Reset interpolation refs
+            targetBallXRef.current = centerBallX
+            targetBallYRef.current = centerBallY
+            lastBallXForLerpRef.current = centerBallX
+            lastBallYForLerpRef.current = centerBallY
             
             setTimeout(() => {
               setGoalFlash(false)
@@ -337,10 +396,17 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
             soundManager.playScore()
             
             // Set ball to center position for explosion
-            setBallX(GAME_WIDTH / 2)
-            setBallY(GAME_HEIGHT / 2)
-            ballXRef.current = GAME_WIDTH / 2
-            ballYRef.current = GAME_HEIGHT / 2
+            const centerBallX = GAME_WIDTH / 2
+            const centerBallY = GAME_HEIGHT / 2
+            setBallX(centerBallX)
+            setBallY(centerBallY)
+            ballXRef.current = centerBallX
+            ballYRef.current = centerBallY
+            // Reset interpolation refs
+            targetBallXRef.current = centerBallX
+            targetBallYRef.current = centerBallY
+            lastBallXForLerpRef.current = centerBallX
+            lastBallYForLerpRef.current = centerBallY
             
             setTimeout(() => {
               setGoalFlash(false)
@@ -355,23 +421,51 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
           }
           
           // Non-host receives state updates
+          // OPTIMIZATION: Update refs only, no React setState for positions (prevents unnecessary re-renders)
+          // The requestAnimationFrame loop will read these refs and update the DOM directly
           if (gameState.topPaddleX !== undefined) {
-            setTopPaddleX(gameState.topPaddleX)
-            topPaddleXRef.current = gameState.topPaddleX
+            // Only update React state if this is our paddle (for UI consistency)
+            // For opponent paddle, use interpolation refs
+            const isMyTopPaddle = playerNumberRef.current === 1
+            if (isMyTopPaddle) {
+              topPaddleXRef.current = gameState.topPaddleX
+            } else {
+              // Opponent's paddle - update interpolation targets
+              const now = Date.now()
+              lastOpponentPaddleXForLerpRef.current = targetOpponentPaddleXRef.current
+              targetOpponentPaddleXRef.current = gameState.topPaddleX
+              lastOpponentPaddleUpdateTimestampRef.current = now
+            }
           }
           if (gameState.bottomPaddleX !== undefined) {
-            setBottomPaddleX(gameState.bottomPaddleX)
-            bottomPaddleXRef.current = gameState.bottomPaddleX
+            const isMyBottomPaddle = playerNumberRef.current === 2
+            if (isMyBottomPaddle) {
+              bottomPaddleXRef.current = gameState.bottomPaddleX
+            } else {
+              // Opponent's paddle - update interpolation targets
+              const now = Date.now()
+              lastOpponentPaddleXForLerpRef.current = targetOpponentPaddleXRef.current
+              targetOpponentPaddleXRef.current = gameState.bottomPaddleX
+              lastOpponentPaddleUpdateTimestampRef.current = now
+            }
           }
           if (gameState.ballX !== undefined) {
-            setBallX(gameState.ballX)
-            ballXRef.current = gameState.ballX
+            // Update interpolation targets for ball
+            const now = Date.now()
+            lastBallXForLerpRef.current = targetBallXRef.current
+            targetBallXRef.current = gameState.ballX
+            ballXRef.current = gameState.ballX // Keep for physics calculations
             lastBallXRef.current = gameState.ballX
+            lastServerUpdateTimestampRef.current = now
           }
           if (gameState.ballY !== undefined) {
-            setBallY(gameState.ballY)
-            ballYRef.current = gameState.ballY
+            // Update interpolation targets for ball
+            const now = Date.now()
+            lastBallYForLerpRef.current = targetBallYRef.current
+            targetBallYRef.current = gameState.ballY
+            ballYRef.current = gameState.ballY // Keep for physics calculations
             lastBallYRef.current = gameState.ballY
+            lastServerUpdateTimestampRef.current = now
           }
           if (gameState.ballVelX !== undefined) {
             // Detect wall bounce (X velocity changes sign)
@@ -385,7 +479,7 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
                 lastWallHitRef.current = false
               }, 100)
             }
-            setBallVelX(gameState.ballVelX)
+            // Update velocity refs only (no setState for velocities)
             ballVelXRef.current = gameState.ballVelX
             lastBallVelXRef.current = gameState.ballVelX
           }
@@ -425,7 +519,7 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
               }, 100)
             }
             
-            setBallVelY(gameState.ballVelY)
+            // Update velocity refs only (no setState for velocities)
             ballVelYRef.current = gameState.ballVelY
             lastBallVelYRef.current = gameState.ballVelY
             
@@ -465,17 +559,17 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
                   setWinnerUserProfileId(winnerPlayer.userProfileId)
                   setLoserUserProfileId(loserPlayer.userProfileId)
                   
-                  // Record win in database
-                  const serverUrl = getApiUrl()
-                  if (!serverUrl) return // Skip if API URL not available
-                  fetch(`${serverUrl}/api/wins/record`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      userProfileId: winnerPlayer.userProfileId,
-                      gameType: 'pong'
-                    })
-                  }).catch(err => console.error('[Pong] Error recording win:', err))
+                  // Save match history to NoCodeBackend
+                  saveMatch({
+                    gameType: 'pong',
+                    winnerId: winnerPlayer.userProfileId,
+                    winnerName: winnerPlayer.name,
+                    winnerScore: finalLeftScore,
+                    loserId: loserPlayer.userProfileId,
+                    loserName: loserPlayer.name,
+                    loserScore: finalRightScore,
+                    roomId: roomId || null
+                  }).catch(err => console.error('[Pong] Error saving match to NoCodeBackend:', err))
                 }
               } else if (finalRightScore >= WIN_SCORE) {
                 // Player 2 (right/bottom) wins
@@ -485,17 +579,17 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
                   setWinnerUserProfileId(winnerPlayer.userProfileId)
                   setLoserUserProfileId(loserPlayer.userProfileId)
                   
-                  // Record win in database
-                  const serverUrl = getApiUrl()
-                  if (!serverUrl) return // Skip if API URL not available
-                  fetch(`${serverUrl}/api/wins/record`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      userProfileId: winnerPlayer.userProfileId,
-                      gameType: 'pong'
-                    })
-                  }).catch(err => console.error('[Pong] Error recording win:', err))
+                  // Save match history to NoCodeBackend
+                  saveMatch({
+                    gameType: 'pong',
+                    winnerId: winnerPlayer.userProfileId,
+                    winnerName: winnerPlayer.name,
+                    winnerScore: finalRightScore,
+                    loserId: loserPlayer.userProfileId,
+                    loserName: loserPlayer.name,
+                    loserScore: finalLeftScore,
+                    roomId: roomId || null
+                  }).catch(err => console.error('[Pong] Error saving match to NoCodeBackend:', err))
                 }
               }
             }
@@ -513,14 +607,53 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
       },
       onPaddleMove: ({ playerNumber: movePlayerNumber, paddleX }) => {
         sendLogToServer(`Received paddle move from player ${movePlayerNumber}: x=${paddleX}`, 'debug')
-        // Update paddle position for both host and non-host
-        // Host needs to see other player's paddle moves too
-        if (movePlayerNumber === 1) {
-          setTopPaddleX(paddleX)
-          topPaddleXRef.current = paddleX
-        } else if (movePlayerNumber === 2) {
-          setBottomPaddleX(paddleX)
-          bottomPaddleXRef.current = paddleX
+        
+        const isMyPaddle = movePlayerNumber === playerNumberRef.current
+        
+        if (isMyPaddle) {
+          // RECONCILIATION: Server sent back our own paddle position
+          // Only correct if there's a significant drift (client-side prediction correction)
+          const predictedX = predictedPaddleXRef.current
+          const serverX = paddleX
+          const drift = Math.abs(predictedX - serverX)
+          
+          if (drift > RECONCILIATION_THRESHOLD) {
+            // Server position differs significantly - reconcile (snap to server position)
+            sendLogToServer(`Reconciling paddle: predicted=${predictedX}, server=${serverX}, drift=${drift}`, 'debug')
+            if (movePlayerNumber === 1) {
+              setTopPaddleX(serverX)
+              topPaddleXRef.current = serverX
+              predictedPaddleXRef.current = serverX
+            } else {
+              setBottomPaddleX(serverX)
+              bottomPaddleXRef.current = serverX
+              predictedPaddleXRef.current = serverX
+            }
+            // Update DOM
+            const paddleElement = movePlayerNumber === 1 ? topPaddleElementRef.current : bottomPaddleElementRef.current
+            if (paddleElement) {
+              paddleElement.style.left = `${serverX}px`
+            }
+          } else {
+            // Small drift - keep our prediction, just update server ref
+            serverPaddleXRef.current = serverX
+          }
+        } else {
+          // Opponent's paddle - update interpolation targets (no setState, no prediction)
+          const now = Date.now()
+          if (movePlayerNumber === 1) {
+            // Top paddle is opponent's
+            lastOpponentPaddleXForLerpRef.current = targetOpponentPaddleXRef.current
+            targetOpponentPaddleXRef.current = paddleX
+            topPaddleXRef.current = paddleX // Keep ref for consistency
+            lastOpponentPaddleUpdateTimestampRef.current = now
+          } else if (movePlayerNumber === 2) {
+            // Bottom paddle is opponent's
+            lastOpponentPaddleXForLerpRef.current = targetOpponentPaddleXRef.current
+            targetOpponentPaddleXRef.current = paddleX
+            bottomPaddleXRef.current = paddleX // Keep ref for consistency
+            lastOpponentPaddleUpdateTimestampRef.current = now
+          }
         }
       }
     })
@@ -537,14 +670,44 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
     return () => {
       cleanup()
       socket.off('players-rotated', handlePlayersRotated)
-      socketInitializedRef.current = false
-    }
-
-    return () => {
-      cleanup()
+      socket.off('pong-pong', handlePongPong)
+      if (pingIntervalRef.current) {
+        clearInterval(pingIntervalRef.current)
+        pingIntervalRef.current = null
+      }
       socketInitializedRef.current = false
     }
   }, [roomId, isHost])
+  
+  // Start/stop ping measurement based on game state
+  useEffect(() => {
+    if (gameState === 'playing' && socketRef.current?.connected) {
+      // Start ping measurement
+      if (pingIntervalRef.current === null) {
+        pingIntervalRef.current = setInterval(() => {
+          if (socketRef.current?.connected && gameStateRef.current === 'playing') {
+            const pingTime = Date.now()
+            pendingPingRef.current = pingTime
+            socketRef.current.emit('pong-ping', { timestamp: pingTime })
+          }
+        }, 2000) // Every 2 seconds
+      }
+    } else {
+      // Stop ping measurement when not playing
+      if (pingIntervalRef.current) {
+        clearInterval(pingIntervalRef.current)
+        pingIntervalRef.current = null
+        setPingLatency(null)
+      }
+    }
+    
+    return () => {
+      if (pingIntervalRef.current) {
+        clearInterval(pingIntervalRef.current)
+        pingIntervalRef.current = null
+      }
+    }
+  }, [gameState])
 
   // Start game when host clicks
   const startGame = useCallback(() => {
@@ -606,8 +769,25 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
     ballVelXRef.current = initialBallVelX
     ballVelYRef.current = initialBallVelY
     leftScoreRef.current = 0
+    
+    // Initialize interpolation refs
+    const centerBallX = GAME_WIDTH / 2
+    const centerBallY = GAME_HEIGHT / 2
+    targetBallXRef.current = centerBallX
+    targetBallYRef.current = centerBallY
+    lastBallXForLerpRef.current = centerBallX
+    lastBallYForLerpRef.current = centerBallY
+    targetOpponentPaddleXRef.current = centerX
+    lastOpponentPaddleXForLerpRef.current = centerX
+    lastServerUpdateTimestampRef.current = Date.now()
+    lastOpponentPaddleUpdateTimestampRef.current = Date.now()
     rightScoreRef.current = 0
     moveSequenceRef.current = 0
+    
+    // Initialize client-side prediction state
+    const myPaddleX = playerNumberRef.current === 1 ? centerX : centerX
+    predictedPaddleXRef.current = myPaddleX
+    serverPaddleXRef.current = myPaddleX
     
     // Broadcast game start to other players via socket
     sendLogToServer(`Checking socket before emit: socket exists=${!!socketRef.current}, connected=${socketRef.current?.connected}, socketId=${socketRef.current?.id}, roomId=${roomId}`, 'info')
@@ -633,6 +813,7 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
   }, [isHost, roomId])
 
   // Handle paddle movement (horizontal for vertical gameplay)
+  // CLIENT-SIDE PREDICTION: Move instantly, send to server in background
   const movePaddle = useCallback((direction) => {
     if (gameStateRef.current !== 'playing') {
       sendLogToServer(`Cannot move paddle: game state is ${gameStateRef.current}`, 'debug')
@@ -645,20 +826,26 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
     
     newX = Math.max(0, Math.min(GAME_WIDTH - PADDLE_WIDTH, newX))
     
+    // CLIENT-SIDE PREDICTION: Update local state IMMEDIATELY (no waiting for server)
     if (isTop) {
       setTopPaddleX(newX)
       topPaddleXRef.current = newX
+      predictedPaddleXRef.current = newX // Track our prediction
     } else {
       setBottomPaddleX(newX)
       bottomPaddleXRef.current = newX
+      predictedPaddleXRef.current = newX // Track our prediction
     }
     
-    // Send paddle position update via socket (use pong/network.js)
+    // Direct DOM update for instant visual feedback
+    const paddleElement = isTop ? topPaddleElementRef.current : bottomPaddleElementRef.current
+    if (paddleElement) {
+      paddleElement.style.left = `${newX}px`
+    }
+    
+    // Send paddle position update via socket (background, non-blocking)
     if (roomId) {
-      sendLogToServer(`Emitting paddle move: player ${playerNumberRef.current}, x=${newX}`, 'debug')
       emitPaddleMove(roomId, playerNumberRef.current, newX)
-    } else {
-      sendLogToServer(`Cannot emit paddle move: roomId=${roomId}`, 'warn')
     }
   }, [roomId])
 
@@ -975,17 +1162,17 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
             setWinnerUserProfileId(winnerPlayer.userProfileId)
             setLoserUserProfileId(loserPlayer.userProfileId)
             
-            // Record win in database
-            const serverUrl = getApiUrl()
-            if (!serverUrl) return // Skip if API URL not available
-            fetch(`${serverUrl}/api/wins/record`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                userProfileId: winnerPlayer.userProfileId,
-                gameType: 'pong'
-              })
-            }).catch(err => console.error('[Pong] Error recording win:', err))
+            // Save match history to NoCodeBackend
+            saveMatch({
+              gameType: 'pong',
+              winnerId: winnerPlayer.userProfileId,
+              winnerName: winnerPlayer.name,
+              winnerScore: rightScoreRef.current,
+              loserId: loserPlayer.userProfileId,
+              loserName: loserPlayer.name,
+              loserScore: leftScoreRef.current,
+              roomId: roomId || null
+            }).catch(err => console.error('[Pong] Error saving match to NoCodeBackend:', err))
           }
           
           // Immediately broadcast gameover state with final scores to all players
@@ -1064,17 +1251,17 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
             setWinnerUserProfileId(winnerPlayer.userProfileId)
             setLoserUserProfileId(loserPlayer.userProfileId)
             
-            // Record win in database
-            const serverUrl = getApiUrl()
-            if (!serverUrl) return // Skip if API URL not available
-            fetch(`${serverUrl}/api/wins/record`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                userProfileId: winnerPlayer.userProfileId,
-                gameType: 'pong'
-              })
-            }).catch(err => console.error('[Pong] Error recording win:', err))
+            // Save match history to NoCodeBackend
+            saveMatch({
+              gameType: 'pong',
+              winnerId: winnerPlayer.userProfileId,
+              winnerName: winnerPlayer.name,
+              winnerScore: leftScoreRef.current, // Fixed: winner is players[0] (left/top), so use leftScoreRef
+              loserId: loserPlayer.userProfileId,
+              loserName: loserPlayer.name,
+              loserScore: rightScoreRef.current,
+              roomId: roomId || null
+            }).catch(err => console.error('[Pong] Error saving match to NoCodeBackend:', err))
           }
           
           // Immediately broadcast gameover state with final scores to all players
@@ -1116,29 +1303,79 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
         }
       }
 
-      // Throttle state updates for mobile performance (~30fps for state, 60fps for physics)
+      // LINEAR INTERPOLATION (LERP) for smooth rendering
+      // Calculate interpolation factor 't' based on time since last server update
       const now = Date.now()
-      if (now - lastStateUpdateTimeRef.current >= STATE_UPDATE_THROTTLE_MS) {
-        lastStateUpdateTimeRef.current = now
-        setBallX(ballXRef.current)
-        setBallY(ballYRef.current)
-        setBallVelX(ballVelXRef.current)
-        setBallVelY(ballVelYRef.current)
+      let interpolatedBallX = ballXRef.current
+      let interpolatedBallY = ballYRef.current
+      let interpolatedOpponentPaddleX = targetOpponentPaddleXRef.current
+      
+      // Only interpolate if we're not the host (host uses authoritative physics)
+      if (!isHost && lastServerUpdateTimestampRef.current > 0) {
+        const timeSinceLastUpdate = now - lastServerUpdateTimestampRef.current
+        
+        // Apply interpolation delay to account for network jitter
+        // This creates a small buffer so we're always rendering slightly behind the server
+        const timeSinceUpdateMinusDelay = timeSinceLastUpdate - INTERPOLATION_DELAY_MS
+        
+        if (timeSinceUpdateMinusDelay > 0) {
+          // Calculate interpolation factor 't'
+          // t = 0 means we're at the last position, t = 1 means we're at the target position
+          // We normalize by the expected server tick rate (33ms for 30Hz)
+          const t = Math.min(1, timeSinceUpdateMinusDelay / SERVER_TICK_RATE_MS)
+          
+          // Interpolate ball position
+          interpolatedBallX = lerp(lastBallXForLerpRef.current, targetBallXRef.current, t)
+          interpolatedBallY = lerp(lastBallYForLerpRef.current, targetBallYRef.current, t)
+        } else {
+          // Still within delay period, use last position
+          interpolatedBallX = lastBallXForLerpRef.current
+          interpolatedBallY = lastBallYForLerpRef.current
+        }
+        
+        // Interpolate opponent paddle position
+        if (lastOpponentPaddleUpdateTimestampRef.current > 0) {
+          const timeSincePaddleUpdate = now - lastOpponentPaddleUpdateTimestampRef.current
+          const timeSincePaddleUpdateMinusDelay = timeSincePaddleUpdate - INTERPOLATION_DELAY_MS
+          
+          if (timeSincePaddleUpdateMinusDelay > 0) {
+            const tPaddle = Math.min(1, timeSincePaddleUpdateMinusDelay / SERVER_TICK_RATE_MS)
+            interpolatedOpponentPaddleX = lerp(lastOpponentPaddleXForLerpRef.current, targetOpponentPaddleXRef.current, tPaddle)
+          } else {
+            interpolatedOpponentPaddleX = lastOpponentPaddleXForLerpRef.current
+          }
+        }
+      } else if (isHost) {
+        // Host uses authoritative physics directly (no interpolation needed)
+        interpolatedBallX = ballXRef.current
+        interpolatedBallY = ballYRef.current
+        // For host, opponent paddle comes from refs
+        interpolatedOpponentPaddleX = playerNumberRef.current === 1 
+          ? bottomPaddleXRef.current 
+          : topPaddleXRef.current
       }
       
       // Direct DOM updates using transforms for better performance (GPU accelerated)
       // Only update if refs are available (they're set during render)
       if (ballElementRef.current) {
-        const displayY = playerNumberRef.current === 1 ? GAME_HEIGHT - ballYRef.current - BALL_SIZE : ballYRef.current
+        const displayY = playerNumberRef.current === 1 
+          ? GAME_HEIGHT - interpolatedBallY - BALL_SIZE 
+          : interpolatedBallY
         const scale = ballHitFlash ? 1.2 : 1
-        ballElementRef.current.style.transform = `translate3d(${ballXRef.current}px, ${displayY}px, 0) scale(${scale})`
+        ballElementRef.current.style.transform = `translate3d(${interpolatedBallX}px, ${displayY}px, 0) scale(${scale})`
       }
       if (topPaddleElementRef.current) {
-        const opponentX = playerNumberRef.current === 1 ? bottomPaddleXRef.current : topPaddleXRef.current
+        // Top paddle is opponent for both players (view-dependent)
+        const opponentX = playerNumberRef.current === 1 
+          ? (isHost ? bottomPaddleXRef.current : interpolatedOpponentPaddleX)
+          : (isHost ? topPaddleXRef.current : interpolatedOpponentPaddleX)
         topPaddleElementRef.current.style.left = `${opponentX}px`
       }
       if (bottomPaddleElementRef.current) {
-        const myX = playerNumberRef.current === 1 ? topPaddleXRef.current : bottomPaddleXRef.current
+        // Bottom paddle is my paddle for both players (view-dependent)
+        const myX = playerNumberRef.current === 1 
+          ? topPaddleXRef.current 
+          : bottomPaddleXRef.current
         bottomPaddleElementRef.current.style.left = `${myX}px`
       }
 
@@ -2006,6 +2243,27 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
             {Math.floor((Date.now() - gameStartTime) / 1000)}s
           </div>
         )}
+        
+        {/* Ping/Latency Indicator */}
+        {gameState === 'playing' && pingLatency !== null && (
+          <div
+            className="absolute top-4 left-4 pointer-events-none z-15"
+            style={{
+              fontSize: '11px',
+              color: pingLatency < 50 ? 'rgba(0, 255, 0, 0.8)' : pingLatency < 100 ? 'rgba(255, 255, 0, 0.8)' : 'rgba(255, 0, 0, 0.8)',
+              letterSpacing: '0.1em',
+              fontFamily: 'monospace',
+              textShadow: '0 1px 3px rgba(0, 0, 0, 0.9)',
+              fontWeight: 'bold',
+              padding: '4px 8px',
+              backgroundColor: 'rgba(0, 0, 0, 0.5)',
+              borderRadius: '4px',
+              border: `1px solid ${pingLatency < 50 ? 'rgba(0, 255, 0, 0.3)' : pingLatency < 100 ? 'rgba(255, 255, 0, 0.3)' : 'rgba(255, 0, 0, 0.3)'}`
+            }}
+          >
+            {pingLatency}ms
+          </div>
+        )}
 
         {/* Reset Message Overlay */}
         {resetMessage && (
@@ -2196,11 +2454,17 @@ function Pong({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName, 
                   <div className="mt-2 pt-2 border-t" style={{ borderColor: 'rgba(255, 255, 255, 0.1)' }}>
                     <p className="text-xs text-white/60 text-center mb-1">Waiting:</p>
                     <div className="flex items-center justify-center gap-2 flex-wrap">
-                      {players.slice(2).map((player, idx) => (
-                        <span key={player.userProfileId || idx} className="text-xs" style={{ color: player.color || '#FFFFFF' }}>
-                          {player.emoji || '⚪'} {player.name}
-                        </span>
-                      ))}
+                      {players.slice(2).map((player, idx) => {
+                        const emoji = player.emoji || '⚪'
+                        const color = player.color || '#FFFFFF'
+                        const name = player.name || 'Unknown Player'
+                        
+                        return (
+                          <span key={player.userProfileId || idx} className="text-xs" style={{ color: color }}>
+                            {emoji} {name}
+                          </span>
+                        )
+                      })}
                     </div>
                   </div>
                 )}

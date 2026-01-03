@@ -18,12 +18,14 @@ export function RoomProvider({ children }) {
   }, [activeRoomId])
   const [socketConnected, setSocketConnected] = useState(false)
   const [isJoining, setIsJoining] = useState(false)
+  const [connectionError, setConnectionError] = useState(null)
   const socketRef = useRef(null)
   const listenersInitializedRef = useRef(false)
   const roomJoinedRef = useRef(false)
   const currentProfileRef = useRef(null)
   const recentPlayerLeftRef = useRef(new Map()) // roomId -> timestamp of last player-left event
   const activeRoomIdRef = useRef(null) // Track activeRoomId in ref to avoid stale closures
+  const connectionTimeoutRef = useRef(null) // Track connection timeout
 
   // Initialize socket connection and track connection status
   useEffect(() => {
@@ -47,6 +49,7 @@ export function RoomProvider({ children }) {
 
       // Set initial connection status
       setSocketConnected(socket.connected)
+      setConnectionError(null)
 
       console.log('[DIAG] [ROOM-PROVIDER] useEffect running', {
         listenersInitialized: listenersInitializedRef.current,
@@ -55,10 +58,28 @@ export function RoomProvider({ children }) {
         timestamp: Date.now()
       })
 
+      // Set a connection timeout (15 seconds)
+      if (!socket.connected) {
+        connectionTimeoutRef.current = setTimeout(() => {
+          if (!socket.connected) {
+            const errorMsg = 'Connection timeout: Unable to connect to server. Please check your internet connection and try again.'
+            console.error('[RoomProvider] Connection timeout after 15 seconds')
+            setConnectionError(errorMsg)
+            setSocketConnected(false)
+          }
+        }, 15000)
+      }
+
       // Socket connection event handlers
       socket.on('connect', () => {
         console.log('[RoomProvider] Socket connected:', socket.id)
         setSocketConnected(true)
+        setConnectionError(null)
+        // Clear timeout on successful connection
+        if (connectionTimeoutRef.current) {
+          clearTimeout(connectionTimeoutRef.current)
+          connectionTimeoutRef.current = null
+        }
       })
 
       socket.on('disconnect', (reason) => {
@@ -67,11 +88,33 @@ export function RoomProvider({ children }) {
         // Reset room connection state on disconnect
         roomJoinedRef.current = false
         setActiveRoomId(null)
+        
+        // Auto-reconnect if disconnected (unless it was a manual disconnect)
+        if (reason !== 'io client disconnect') {
+          console.log('[RoomProvider] Attempting to reconnect socket...')
+          // Set new timeout for reconnection
+          connectionTimeoutRef.current = setTimeout(() => {
+            if (!socket.connected) {
+              const errorMsg = 'Reconnection timeout: Unable to reconnect to server. Please refresh the page.'
+              console.error('[RoomProvider] Reconnection timeout after 15 seconds')
+              setConnectionError(errorMsg)
+            }
+          }, 15000)
+          socket.connect()
+        }
       })
 
       socket.on('connect_error', (error) => {
         console.error('[RoomProvider] Socket connection error:', error)
         setSocketConnected(false)
+        // Set error message for user
+        const errorMsg = error.message || 'Failed to connect to server. Please check your internet connection.'
+        setConnectionError(errorMsg)
+        // Clear timeout since we got an error
+        if (connectionTimeoutRef.current) {
+          clearTimeout(connectionTimeoutRef.current)
+          connectionTimeoutRef.current = null
+        }
       })
 
       if (!listenersInitializedRef.current) {
@@ -482,6 +525,11 @@ export function RoomProvider({ children }) {
     })
 
     return () => {
+      // Clear connection timeout on cleanup
+      if (connectionTimeoutRef.current) {
+        clearTimeout(connectionTimeoutRef.current)
+        connectionTimeoutRef.current = null
+      }
       // Don't remove listeners - socket is shared and other components may need them
       // The RoomProvider should stay mounted for the app lifetime
     }
@@ -519,8 +567,10 @@ export function RoomProvider({ children }) {
       console.log('[RoomProvider] Joining room:', roomId)
       await joinRoom(roomId, {
         playerName: profile.name,
-        userProfileId: profile.id,
-        colorId: profile.colorId
+        userProfileId: profile.id, // NoCodeBackend profile ID
+        // Note: Server ignores emoji/color from client and fetches from NoCodeBackend database
+        emoji: profile.emoji || '⚪', // Emoji from NoCodeBackend (server will override with database value)
+        color: profile.color || '#FFFFFF' // Color from NoCodeBackend (server will override with database value)
       })
       
       roomJoinedRef.current = true
@@ -556,10 +606,14 @@ export function RoomProvider({ children }) {
 
     try {
       console.log('[RoomProvider] Creating room with profile:', profile)
+      // All profiles are now in NoCodeBackend, use the profile ID directly
+      // Server will create local profile by name if needed for room management
       const result = await createRoom({
         playerName: profile.name,
-        userProfileId: profile.id,
-        colorId: profile.colorId
+        userProfileId: profile.id, // NoCodeBackend profile ID
+        // Note: Server ignores emoji/color from client and fetches from NoCodeBackend database
+        emoji: profile.emoji || '⚪', // Emoji from NoCodeBackend (server will override with database value)
+        color: profile.color || '#FFFFFF' // Color from NoCodeBackend (server will override with database value)
       })
       
       if (result.roomId) {
@@ -696,6 +750,7 @@ export function RoomProvider({ children }) {
     activeRoomId,
     socketConnected,
     isJoining,
+    connectionError,
     // Connection methods
     connectToRoom,
     createNewRoom,
@@ -816,6 +871,7 @@ export function useRoomConnection() {
     activeRoomId: context.activeRoomId,
     socketConnected: context.socketConnected,
     isJoining: context.isJoining,
+    connectionError: context.connectionError,
     snapshotVersion: context.snapshotVersion, // Include snapshotVersion to trigger re-renders
     connectToRoom: context.connectToRoom,
     createNewRoom: context.createNewRoom,

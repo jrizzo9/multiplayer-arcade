@@ -18,14 +18,14 @@ function getRoomIdFromUrl() {
 function Menu({ onSelectGame, currentProfile, onSwitchProfile, onLogout, roomState, onRoomStateChange }) {
   const [showRoomManager, setShowRoomManager] = useState(false)
   const [availableRooms, setAvailableRooms] = useState([])
-  const profileAnimal = currentProfile?.animal && currentProfile?.color
-    ? { emoji: currentProfile.animal, color: currentProfile.color }
+  const profileAnimal = currentProfile?.emoji && currentProfile?.color
+    ? { emoji: currentProfile.emoji, color: currentProfile.color }
     : getProfileAnimal(0)
 
   // Get real-time room data from RoomProvider (single source of truth)
   const roomId = getRoomIdFromUrl()
   const realTimeRoomState = useRoom(roomId)
-  const { createNewRoom, socketConnected } = useRoomConnection()
+  const { createNewRoom, socketConnected, connectionError } = useRoomConnection()
   
   // Use real-time player data if available, fallback to prop roomState
   const actualPlayers = realTimeRoomState.players?.length > 0 
@@ -354,6 +354,46 @@ function Menu({ onSelectGame, currentProfile, onSwitchProfile, onLogout, roomSta
                 </div>
               )}
               
+            {/* Connection Status Indicator */}
+            <div className="w-full max-w-md mb-2">
+              {!socketConnected ? (
+                <div className="flex flex-col gap-2">
+                  <div className="flex items-center gap-2 px-4 py-2 rounded-lg border" style={{
+                    borderColor: connectionError ? 'rgba(239, 68, 68, 0.5)' : 'rgba(234, 179, 8, 0.5)',
+                    backgroundColor: connectionError ? 'rgba(239, 68, 68, 0.1)' : 'rgba(234, 179, 8, 0.1)',
+                    backdropFilter: 'blur(12px)'
+                  }}>
+                    <div className={`w-2 h-2 rounded-full ${connectionError ? 'bg-red-400' : 'bg-yellow-400 animate-pulse'}`}></div>
+                    <p className={`text-xs sm:text-sm font-medium ${connectionError ? 'text-red-300' : 'text-yellow-300'}`}>
+                      {connectionError ? 'Connection Failed' : 'Connecting to server...'}
+                    </p>
+                  </div>
+                  {connectionError && (
+                    <div className="px-4 py-2 rounded-lg border border-red-500/50 bg-red-900/20">
+                      <p className="text-xs text-red-300">{connectionError}</p>
+                      <button
+                        onClick={() => window.location.reload()}
+                        className="mt-2 px-3 py-1 bg-red-600 hover:bg-red-700 text-white text-xs rounded transition-colors"
+                      >
+                        Refresh Page
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 px-4 py-2 rounded-lg border" style={{
+                  borderColor: 'rgba(34, 197, 94, 0.5)',
+                  backgroundColor: 'rgba(34, 197, 94, 0.1)',
+                  backdropFilter: 'blur(12px)'
+                }}>
+                  <div className="w-2 h-2 bg-green-400 rounded-full"></div>
+                  <p className="text-xs sm:text-sm text-green-300 font-medium">
+                    Connected to server
+                  </p>
+                </div>
+              )}
+            </div>
+
             <Button
               onClick={async () => {
                 console.log('[Menu] Create Room button clicked')
@@ -560,7 +600,7 @@ function Menu({ onSelectGame, currentProfile, onSwitchProfile, onLogout, roomSta
                               <div className="flex items-center gap-2">
                                 <span className="text-base sm:text-lg">{player.emoji || '⚪'}</span>
                                 <span className="text-sm sm:text-base font-medium text-white">
-                                  {player.name}
+                                  {player.name || 'Unknown Player'}
                                   {isCurrentPlayer && <span className="text-white/50 ml-1 text-xs">(You)</span>}
                                 </span>
                               </div>
@@ -769,7 +809,7 @@ function Menu({ onSelectGame, currentProfile, onSwitchProfile, onLogout, roomSta
                               <div className="flex items-center gap-2">
                                 <span className="text-base sm:text-lg">{player.emoji || '⚪'}</span>
                                 <span className="text-sm sm:text-base font-medium text-white">
-                                  {player.name}
+                                  {player.name || 'Unknown Player'}
                                   {isCurrentPlayer && <span className="text-white/50 ml-1 text-xs">(You)</span>}
                                 </span>
                               </div>

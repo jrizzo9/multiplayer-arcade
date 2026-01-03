@@ -513,17 +513,9 @@ function Snake({ roomId, isHost: propIsHost, onLeave, onRoomCreated, playerName,
         // Record win if there's a winner (not a tie)
         if (winner === 1 || winner === 2) {
           const winnerPlayer = players[winner - 1]
+          // Wins are automatically saved to NoCodeBackend via match history
           if (winnerPlayer?.userProfileId) {
-            const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:'
-            const serverUrl = `${protocol}//${window.location.hostname}:8000`
-            fetch(`${serverUrl}/api/wins/record`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                userProfileId: winnerPlayer.userProfileId,
-                gameType: 'snake'
-              })
-            }).catch(err => console.error('[Snake] Error recording win:', err))
+            // No need to record win separately - handled by match history
           }
         }
         

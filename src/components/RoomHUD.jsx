@@ -65,21 +65,35 @@ function RoomHUD({ onShowRoom }) {
             </span>
           )}
           <div className="flex items-center gap-1.5">
-            {players.map((player, index) => (
-              <div
-                key={player.userProfileId || player.id || index}
-                className="relative w-6 h-6 sm:w-7 sm:h-7 rounded-full border flex items-center justify-center text-sm sm:text-base"
-                style={{ 
-                  borderColor: player.color || '#FFFFFF',
-                  backgroundColor: player.color || '#FFFFFF',
-                  marginLeft: index > 0 ? '-4px' : '0',
-                  zIndex: players.length - index
-                }}
-                title={player.name}
-              >
-                {player.emoji || '⚪'}
-              </div>
-            ))}
+            {players.map((player, index) => {
+              // CRITICAL: For current player, always use profile emoji from NoCodeBackend as source of truth
+              // For other players, use emoji from room state (which should match their NoCodeBackend profile)
+              const isCurrentPlayer = currentProfile && player.userProfileId && 
+                String(player.userProfileId) === String(currentProfile.id)
+              const playerEmoji = isCurrentPlayer && currentProfile?.emoji
+                ? currentProfile.emoji
+                : player.emoji || '⚪'
+              const playerColor = isCurrentPlayer && currentProfile?.color
+                ? currentProfile.color
+                : player.color || '#FFFFFF'
+              const playerName = player.name || 'Unknown Player'
+              
+              return (
+                <div
+                  key={player.userProfileId || player.id || index}
+                  className="relative w-6 h-6 sm:w-7 sm:h-7 rounded-full border flex items-center justify-center text-sm sm:text-base"
+                  style={{ 
+                    borderColor: playerColor,
+                    backgroundColor: `${playerColor}20`,
+                    marginLeft: index > 0 ? '-4px' : '0',
+                    zIndex: players.length - index
+                  }}
+                  title={playerName}
+                >
+                  {playerEmoji}
+                </div>
+              )
+            })}
           </div>
           <span className="text-xs text-white/60">
             {playerCount}/{maxPlayers}

@@ -129,6 +129,34 @@ export function getProfileAnimal(profileIndex) {
   return colors[profileIndex % colors.length] || { color: '#FFFFFF', emoji: '⚪' }
 }
 
+/**
+ * Normalize player data to ensure consistent property names across the app
+ * Only uses emoji from NoCodeBackend (no fallback to animal)
+ * @param {Object} player - Player object (may have emoji, color, name)
+ * @returns {Object} Normalized player object with emoji, color, name
+ */
+export function normalizePlayerData(player) {
+  if (!player) {
+    return { emoji: '⚪', color: '#FFFFFF', name: 'Unknown Player' }
+  }
+  
+  // Only use emoji from NoCodeBackend - no fallback to animal
+  const emoji = player.emoji || '⚪'
+  
+  // Normalize color - always provide a color
+  const color = player.color || '#FFFFFF'
+  
+  // Normalize name - always provide a name
+  const name = player.name || 'Unknown Player'
+  
+  return {
+    ...player, // Keep all original properties
+    emoji,     // Only from NoCodeBackend
+    color,     // Always present
+    name       // Always present
+  }
+}
+
 // Initialize colors on module load
 fetchPlayerColors().catch(() => {
   // Silently fail, will use fallback

@@ -494,18 +494,9 @@ function MemoryGame({ roomId, isHost: propIsHost, onLeave, onRoomCreated, player
             }
           }
           
-          // Record win if there's a winner
+          // Wins are automatically saved to NoCodeBackend via match history
           if (winnerUserProfileId) {
-            const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:'
-            const serverUrl = `${protocol}//${window.location.hostname}:8000`
-            fetch(`${serverUrl}/api/wins/record`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                userProfileId: winnerUserProfileId,
-                gameType: 'memory'
-              })
-            }).catch(err => console.error('[MemoryGame] Error recording win:', err))
+            // No need to record win separately - handled by match history
           }
           
           // Broadcast gameover
@@ -793,11 +784,13 @@ function MemoryGame({ roomId, isHost: propIsHost, onLeave, onRoomCreated, player
         const style = getPlayerStyle(idx)
         const playerScore = scores.get(player.userProfileId) || 0
         const isCurrentPlayer = player.userProfileId === currentTurn
+        // Use player's emoji from NoCodeBackend
+        const emoji = player.emoji || style.emoji
         return {
           userProfileId: player.userProfileId,
           name: player.name || `Player ${idx + 1}`,
           score: playerScore,
-          emoji: style.emoji,
+          emoji: emoji,
           color: style.color,
           isCurrentTurn: isCurrentPlayer
         }
@@ -911,6 +904,8 @@ function MemoryGame({ roomId, isHost: propIsHost, onLeave, onRoomCreated, player
         >
           {players.map((player, idx) => {
             const style = getPlayerStyle(idx)
+            // Use player's emoji from NoCodeBackend
+            const emoji = player.emoji || style.emoji
             const playerScore = scores.get(player.userProfileId) || 0
             const isCurrentPlayer = player.userProfileId === currentTurn
             return (
@@ -931,7 +926,7 @@ function MemoryGame({ roomId, isHost: propIsHost, onLeave, onRoomCreated, player
                 <span className="text-xl" style={{
                   filter: isCurrentPlayer ? 'drop-shadow(0 0 4px rgba(255, 255, 255, 0.4))' : 'none',
                   transition: 'all 0.3s ease'
-                }}>{style.emoji}</span>
+                }}>{emoji}</span>
                 <span 
                   className={isCurrentPlayer ? 'font-bold text-2xl sm:text-3xl' : 'font-semibold text-xl sm:text-2xl'} 
                   style={{ 
@@ -1033,12 +1028,14 @@ function MemoryGame({ roomId, isHost: propIsHost, onLeave, onRoomCreated, player
                 const currentPlayer = players.find(p => p.userProfileId === currentTurn)
                 const currentPlayerIndex = currentPlayer ? players.indexOf(currentPlayer) : -1
                 const style = currentPlayerIndex >= 0 ? getPlayerStyle(currentPlayerIndex) : { emoji: '⚪', color: '#FFFFFF', name: 'Player' }
+                // Use player's emoji from NoCodeBackend
+                const emoji = currentPlayer?.emoji || style.emoji
                 return (
                   <>
                     <span className="text-xl" style={{ 
                       filter: isMyTurn ? 'drop-shadow(0 0 4px rgba(255, 255, 255, 0.5))' : 'none',
                       transition: 'all 0.3s ease'
-                    }}>{style.emoji}</span>
+                    }}>{emoji}</span>
                     <span style={{ 
                       color: style.color,
                       textShadow: isMyTurn ? '0 0 8px rgba(255, 255, 255, 0.3)' : 'none',
@@ -1346,7 +1343,7 @@ function MemoryGame({ roomId, isHost: propIsHost, onLeave, onRoomCreated, player
                           }}>{idx === 0 ? '1' : `${idx + 1}`}</span>
                           <span className="text-2xl" style={{
                             filter: isWinner ? 'drop-shadow(0 0 4px rgba(255, 255, 255, 0.3))' : 'none'
-                          }}>{style.emoji}</span>
+                          }}>{player?.emoji || style.emoji}</span>
                           <span className="text-white font-medium" style={{
                             color: isWinner ? 'rgba(255, 255, 255, 0.95)' : 'rgba(255, 255, 255, 0.7)'
                           }}>{player?.name || 'Player'}</span>

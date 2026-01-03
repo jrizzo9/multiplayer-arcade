@@ -32,60 +32,37 @@ const loadStoredProfile = () => {
 // Initialize on module load
 loadStoredProfile()
 
-// Get all profiles from backend database
-export async function getAllProfiles() {
-  if (profilesLoadPromise) {
+// Get all profiles from NoCodeBackend only
+export async function getAllProfiles(forceRefresh = false) {
+  // If forcing refresh, clear cache and promise
+  if (forceRefresh) {
+    profilesCache = null
+    profilesLoadPromise = null
+  }
+  
+  // If there's a pending load and we're not forcing refresh, return it
+  if (profilesLoadPromise && !forceRefresh) {
     return profilesLoadPromise
   }
   
-  const apiUrl = `${getApiUrl()}/api/user-profiles`
-  console.log('[getAllProfiles] Fetching profiles from:', apiUrl)
+  console.log('[getAllProfiles] Fetching profiles from NoCodeBackend...', forceRefresh ? '(forced refresh)' : '')
   
-  profilesLoadPromise = fetch(apiUrl)
-    .then(res => {
-      console.log('[getAllProfiles] Response status:', res.status, res.statusText)
-      if (!res.ok) {
-        return res.text().then(text => {
-          console.error('[getAllProfiles] Error response body:', text)
-          throw new Error(`Failed to fetch profiles: ${res.status} ${res.statusText}`)
-        })
-      }
-      return res.json()
-    })
-    .then(data => {
-      console.log('[getAllProfiles] Received data:', data)
-      if (!data || !data.profiles) {
-        console.warn('[getAllProfiles] Invalid response format, expected { profiles: [...] }')
-        profilesCache = []
-        return []
-      }
-      // Transform backend format to frontend format
-      profilesCache = data.profiles.map(p => ({
-        id: p.id,
-        name: p.name,
-        createdAt: p.created_at,
-        animal: p.emoji,
-        color: p.color,
-        isActive: p.isActive || false, // Profile is currently in use
-        scores: {} // Scores are now stored in database, not in memory
-      }))
-      console.log('[getAllProfiles] Transformed profiles:', profilesCache.length, 'profiles')
+  profilesLoadPromise = (async () => {
+    try {
+      const { getAllProfilesFromNCB } = await import('../services/db')
+      const ncbProfiles = await getAllProfilesFromNCB()
+      console.log('[getAllProfiles] Loaded', ncbProfiles.length, 'profiles from NoCodeBackend')
+      
+      profilesCache = ncbProfiles
       return profilesCache
-    })
-    .catch(error => {
-      console.error('[getAllProfiles] Error loading profiles from backend:', error)
-      console.error('[getAllProfiles] API URL was:', apiUrl)
-      console.error('[getAllProfiles] Error details:', {
-        message: error.message,
-        stack: error.stack,
-        name: error.name
-      })
+    } catch (error) {
+      console.error('[getAllProfiles] Error loading NoCodeBackend profiles:', error)
       profilesCache = []
       return []
-    })
-    .finally(() => {
+    } finally {
       profilesLoadPromise = null
-    })
+    }
+  })()
   
   return profilesLoadPromise
 }
@@ -96,40 +73,64 @@ export async function getProfile(profileIdOrName) {
   return profiles.find(p => p.id === profileIdOrName || p.name === profileIdOrName) || null
 }
 
-// Create a new profile
+// Create a new profile in NoCodeBackend
 export async function createProfile(name) {
   try {
-    const response = await fetch(`${getApiUrl()}/api/user-profiles`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ name: name.trim() })
+    console.log('[createProfile] Creating profile with name:', name)
+    const { saveProfile } = await import('../services/db')
+    const { getProfileAnimal } = await import('./playerColors')
+    
+    // Get existing profiles to determine the index for color/emoji assignment
+    const existingProfiles = await getAllProfiles()
+    const profileIndex = existingProfiles.length
+    
+    // Get color and emoji for this profile index
+    const { color, emoji } = getProfileAnimal(profileIndex)
+    
+    console.log('[createProfile] Assigning color and emoji:', { color, emoji, profileIndex })
+    
+    // Create profile in NoCodeBackend with color and emoji
+    console.log('[createProfile] Calling saveProfile...')
+    const result = await saveProfile({
+      name: name.trim(),
+      color: color,
+      emoji: emoji
     })
     
-    if (!response.ok) {
-      throw new Error('Failed to create profile')
+    console.log('[createProfile] saveProfile returned:', result)
+    
+    if (!result || !result.id) {
+      console.error('[createProfile] Invalid response from saveProfile:', result)
+      throw new Error('Failed to create profile in NoCodeBackend: Invalid response - no profile ID returned')
     }
     
-    const backendProfile = await response.json()
-    
-    // Clear cache to force reload
+    // Clear cache to force reload on next getAllProfiles call
     profilesCache = null
+    profilesLoadPromise = null
+    
+    // Small delay to ensure NoCodeBackend has processed the creation
+    await new Promise(resolve => setTimeout(resolve, 200))
     
     // Transform to frontend format
     const newProfile = {
-      id: backendProfile.id,
-      name: backendProfile.name,
-      createdAt: new Date().toISOString(),
-      animal: backendProfile.emoji,
-      color: backendProfile.color,
-      scores: {} // Scores are stored in database
+      id: result.id.toString(), // Convert numeric ID to string
+      name: result.name || name.trim(), // Use name from result or fallback to input
+      createdAt: result.createdAt || new Date().toISOString(),
+      emoji: result.emoji || emoji, // Add emoji property for direct access
+      animal: result.emoji || emoji, // Keep animal for backward compatibility
+      color: result.color || color,   // Use color from result or assigned color
+      scores: {},
+      source: 'nocodebackend'
     }
     
+    console.log('[createProfile] Created profile successfully:', newProfile)
     return newProfile
   } catch (error) {
-    console.error('Error creating profile:', error)
-    throw error
+    console.error('[createProfile] Error creating profile:', error)
+    console.error('[createProfile] Error stack:', error.stack)
+    // Re-throw with more context
+    const errorMessage = error.message || 'Failed to create profile. Please check your connection and try again.'
+    throw new Error(errorMessage)
   }
 }
 
@@ -143,7 +144,7 @@ export async function updateProfileScore(profileIdOrName, gameType, scoreData) {
   return await getProfile(profileIdOrName)
 }
 
-// Delete a profile
+// Delete a profile from NoCodeBackend
 export async function deleteProfile(profileIdOrName) {
   try {
     // Get profile to find the ID if name was provided
@@ -152,30 +153,18 @@ export async function deleteProfile(profileIdOrName) {
       throw new Error('Profile not found')
     }
     
-    const response = await fetch(`${getApiUrl()}/api/user-profiles/${profile.id}`, {
-      method: 'DELETE'
-    })
+    // Use the profile ID directly (already a string from NoCodeBackend)
+    const { deleteProfile: deleteNCBProfile } = await import('../services/db')
+    const success = await deleteNCBProfile(profile.id)
     
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ error: 'Failed to delete profile' }))
-      throw new Error(errorData.error || 'Failed to delete profile')
+    if (!success) {
+      throw new Error('Failed to delete profile from NoCodeBackend')
     }
     
     // Clear current profile if it was deleted
     if (currentProfileName === profileIdOrName || currentProfileName === profile.name) {
       currentProfileName = null
-    }
-    
-    // Clear active session for deleted profile
-    try {
-      const response = await fetch(`${getApiUrl()}/api/user-profiles/${profile.id}/deactivate`, {
-        method: 'POST'
-      })
-      if (!response.ok) {
-        console.error('Failed to deactivate profile session on delete')
-      }
-    } catch (error) {
-      console.error('Error deactivating profile session on delete:', error)
+      localStorage.removeItem('multiplayer_arcade_current_profile_name')
     }
     
     // Clear cache to force reload
@@ -192,10 +181,16 @@ export async function deleteProfile(profileIdOrName) {
 // Get current selected profile (from memory only)
 export async function getCurrentProfile() {
   if (!currentProfileName) return null
-  return await getProfile(currentProfileName)
+  const profile = await getProfile(currentProfileName)
+  // Ensure profile has emoji property (should always be set from NoCodeBackend)
+  if (profile && !profile.emoji && profile.animal) {
+    profile.emoji = profile.animal
+  }
+  return profile
 }
 
-// Set current profile (stored in memory, localStorage, and database)
+// Set current profile (stored in memory and localStorage)
+// Note: NoCodeBackend doesn't track active sessions, so we only store locally
 export async function setCurrentProfile(profileName) {
   currentProfileName = profileName
   
@@ -212,41 +207,24 @@ export async function setCurrentProfile(profileName) {
     console.error('Error saving profile to localStorage:', error)
   }
   
-  // Mark profile as active in database
+  // Update lastSeen in NoCodeBackend
   if (profileName) {
     try {
       const profile = await getProfile(profileName)
       if (profile) {
-        const response = await fetch(`${getApiUrl()}/api/user-profiles/${profile.id}/activate`, {
-          method: 'POST'
-        })
-        if (!response.ok) {
-          console.error('Failed to activate profile session')
-        }
+        const { updateProfile } = await import('../services/db')
+        const now = new Date()
+        const dateString = now.toISOString().slice(0, 19).replace('T', ' ')
+        await updateProfile(profile.id, { lastSeen: dateString })
       }
     } catch (error) {
-      console.error('Error activating profile session:', error)
+      console.error('Error updating profile lastSeen:', error)
     }
   }
 }
 
-// Clear current profile (remove from memory, localStorage, and database)
+// Clear current profile (remove from memory and localStorage)
 export async function clearCurrentProfile() {
-  if (currentProfileName) {
-    try {
-      const profile = await getProfile(currentProfileName)
-      if (profile) {
-        const response = await fetch(`${getApiUrl()}/api/user-profiles/${profile.id}/deactivate`, {
-          method: 'POST'
-        })
-        if (!response.ok) {
-          console.error('Failed to deactivate profile session')
-        }
-      }
-    } catch (error) {
-      console.error('Error deactivating profile session:', error)
-    }
-  }
   currentProfileName = null
   
   // Remove from localStorage
